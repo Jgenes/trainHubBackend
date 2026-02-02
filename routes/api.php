@@ -7,17 +7,21 @@ use App\Http\Controllers\CourseController;
 use App\Http\Controllers\CohortController;
 use App\Http\Controllers\EnrollmentController;
 use App\Http\Controllers\TrainingController;
-
+use App\Http\Controllers\PesapalController;
+use App\Http\Controllers\PaymentController;
+use App\Http\Controllers\LearningController;
 // Public
 Route::post('/register', [AuthController::class, 'userRegister']);
 Route::post('/tenant-register', [AuthController::class, 'tenantRegister']);
 Route::post('/login', [AuthController::class, 'login']);
 Route::post('/verify-otp', [AuthController::class, 'verifyLoginOtp']);
-Route::get('/activate-account', [AuthController::class, 'activateAccount']);
-
+// Iweke hapa juu kabisa ya file au nje ya group la auth
+Route::get('/activate-account', [AuthController::class, 'activateAccount'])->name('activate.account');
 // Authenticated routes
 Route::middleware('auth:sanctum')->group(function () {
-
+Route::post('/payment/initiate', [PaymentController::class, 'initiate']);
+Route::get('/pesapal/redirect/{payment}', [PaymentController::class, 'redirect'])->name('pesapal.redirect');
+Route::get('/pesapal/callback', [PaymentController::class, 'callback'])->name('pesapal.callback');
     // Me
 Route::get('/me', function () {
 return auth()->user();
@@ -46,11 +50,9 @@ Route::get('/my-enrollments', [EnrollmentController::class, 'myEnrollments']);
     Route::get('/training', [TrainingController::class, 'index']);
     Route::get('/training/{id}', [TrainingController::class, 'show']);
 
-use App\Http\Controllers\PaymentController;
 
 // web.php
-Route::get('/pesapal/redirect/{payment}', [PaymentController::class, 'redirect'])->name('pesapal.redirect');
-Route::get('/pesapal/callback', [PaymentController::class, 'callback'])->name('pesapal.callback');
+
 Route::post('/courses/{course}/announcement', [CourseController::class, 'addAnnouncement']);
 Route::post('/courses/{course}/tool', [CourseController::class, 'addLearningTool']);
 Route::post('/courses/{course}/question', [CourseController::class, 'askQuestion']);
@@ -66,3 +68,23 @@ Route::get('/pesapal/redirect', [PesapalController::class, 'redirect'])
 
 Route::post('/pesapal/callback', [PesapalController::class, 'callback'])
     ->name('pesapal.callback');
+    
+    // Route ya kuangalia kama user ana access na kozi
+    // Route::get('/user/courses', [UserController::class, 'myCourses']);
+
+Route::middleware('auth:sanctum')->group(function () {
+    Route::get('/my-learning', [LearningController::class, 'myCourses']);
+Route::get('/provider/enrollments', [LearningController::class, 'providerEnrollments']
+);
+Route::get('/my-payments', [EnrollmentController::class, 'myPayments']);
+Route::get('/admin/all-payments', [EnrollmentController::class, 'allPayments']);
+    Route::delete('/admin/payments/{id}', [EnrollmentController::class, 'deletePayment']);
+    Route::get('/provider/payments', [EnrollmentController::class, 'providerPayments']);
+    
+// api.php
+Route::get('/provider/enrollments', [EnrollmentController::class, 'providerEnrollments']);
+});
+
+Route::post('/payment-callback', [EnrollmentController::class, 'handlePaymentCallback']);
+
+Route::get('/download-document/{reference}', [EnrollmentController::class, 'downloadDoc'])->name('download.doc');

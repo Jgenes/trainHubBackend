@@ -3,7 +3,7 @@
 namespace App\Providers;
 
 use Illuminate\Support\ServiceProvider;
-
+use App\Observers\PaymentObserver; // Hakikisha umei-import Observer yako
 class AppServiceProvider extends ServiceProvider
 {
     /**
@@ -19,6 +19,6 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        //
+        \App\Models\Payment::observe(\App\Observers\PaymentObserver::class);
     }
 }

@@ -1,4 +1,4 @@
-<?php
+7<?php
 
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
@@ -17,7 +17,8 @@ return new class extends Migration
 $table->string('legal_name');
 $table->string('brand_name')->nullable();
 $table->string('provider_type');
-
+$table->string('tin')->nullable();
+$table->string('website')->nullable();
 $table->string('country')->default('Tanzania');
 $table->string('region');
 $table->string('district')->nullable();
@@ -34,7 +35,7 @@ $table->enum('status',['DRAFT','PENDING','APPROVED','REJECTED','SUSPENDED'])
 
 $table->string('provider_slug')->unique();
 $table->foreignId('created_by');
-
+    $table->foreignId('user_id')->references('id')->on('users')->onDelete('cascade');
 $table->timestamps();
 $table->softDeletes();
 

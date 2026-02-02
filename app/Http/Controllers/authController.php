@@ -95,34 +95,35 @@ class AuthController extends Controller
     // =====================
     // ACTIVATE ACCOUNT
     // =====================
-  public function activateAccount(Request $request)
+ public function activateAccount(Request $request)
 {
-    // Use input() to catch the token whether it's in the query string or body
-    $token = $request->input('token'); 
-    
-    if (!$token) return response()->json(['message' => 'Token is required'], 400);
+    // 1. Chukuwa email kutoka kwenye URL (?email=...)
+    $email = $request->query('email');
 
-    $user = User::where('activation_token', $token)->first();
-    
+    if (!$email) {
+        return response()->json(['message' => 'Email haijapatikana kwenye link.'], 400);
+    }
+
+    // 2. Tafuta user
+    $user = \App\Models\User::where('email', $email)->first();
+
     if (!$user) {
-        return response()->json(['message' => 'Invalid or expired activation token'], 400);
+        return response()->json(['message' => 'Mtumiaji huyu hayupo.'], 404);
     }
 
-    if ($user->is_verified) {
-        return response()->json(['message' => 'Account already activated'], 200);
+    // 3. Kama tayari asha-activate, usipoteze muda
+    if ($user->email_verified_at !== null) {
+        return response()->json(['message' => 'Account ilishakuwa active.'], 200);
     }
 
-    if (Carbon::now()->gt($user->activation_expires_at)) {
-        return response()->json(['message' => 'Activation link expired'], 400);
-    }
+    // 4. Update Database
+    $user->email_verified_at = now();
+    $user->status = 'active'; // Hakikisha column hii ipo, kama huna ifute hii line
+    $user->save();
 
-    $user->update([
-        'is_verified' => true,
-        'activation_token' => null,
-        'activation_expires_at' => null
-    ]);
-
-    return response()->json(['message' => 'Account activated successfully!'], 200);
+    // 5. MUHIMU: Mpeleke mtumiaji kwenye Login Page ya React
+    // Badilisha 5173 iwe port ya React yako (mfano 3000)
+    return redirect('http://localhost:5173/login?activated=true');
 }
 
     // =====================

@@ -1,95 +1,186 @@
 <?php
 namespace App\Http\Controllers;
 
-use App\Models\Enrollment;
-use App\Models\Cohort;
+use App\Models\Payment;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
+use Barryvdh\DomPDF\Facade\Pdf;
+use App\Mail\PaymentReceiptMail;
+use Illuminate\Support\Facades\Mail;
 use Carbon\Carbon;
 
 class EnrollmentController extends Controller
 {
-    // Start checkout - create PENDING enrollment
-    public function startCheckout(Request $request)
+    /**
+     * Handle the Payment Callback/Webhook
+     */
+    public function handlePaymentCallback(Request $request)
     {
-        $studentId = Auth::id(); // logged-in student
-        $data = $request->validate([
-            'course_id' => 'required|exists:courses,id',
-            'cohort_id' => 'required|exists:cohorts,id'
-        ]);
+        // 1. Validate the incoming request
+        $reference = $request->input('reference');
+        $status = strtoupper($request->input('status', 'PENDING'));
 
-        $cohort = Cohort::where('id', $data['cohort_id'])
-            ->where('course_id', $data['course_id'])
-            ->firstOrFail();
-
-        // Check seats availability
-        $enrolledCount = Enrollment::where('cohort_id', $cohort->id)
-            ->where('status', 'CONFIRMED')
-            ->count();
-
-        if ($enrolledCount >= $cohort->capacity) {
-            return response()->json(['message' => 'Cohort is full'], 400);
+        // 2. Find the payment or fail
+$payment = Payment::with(['course', 'cohort', 'user'])->where('reference', $reference)->first();        
+        if (!$payment) {
+            return response()->json(['status' => 'error', 'message' => 'Payment reference not found'], 404);
         }
 
-        // Create PENDING enrollment
-        $enrollment = Enrollment::create([
-            'student_id' => $studentId,
-            'provider_id' => $cohort->provider_id,
-            'course_id' => $cohort->course_id,
-            'cohort_id' => $cohort->id,
-            'status' => 'PENDING'
-        ]);
+        try {
+            // 3. Prepare data for the update
+            $updateData = [
+                'status' => $status,
+                'user_name' => $request->input('user_name', $payment->user_name),
+                'payment_method' => $request->input('payment_method', 'Mobile Money / Card'),
+            ];
+
+            // If it's a new invoice (Pending), set an expiry date (e.g., 7 days)
+            if ($status === 'PENDING' && !$payment->expires_at) {
+                $updateData['expires_at'] = Carbon::now()->addDays(7);
+            }
+
+            $payment->update($updateData);
+
+            // 4. Generate the correct PDF type
+            // If status is PENDING, we use invoice. If COMPLETED/PAID, we use receipt.
+            $isPaid = in_array($status, ['COMPLETED', 'PAID', 'SUCCESS']);
+            $view = $isPaid ? 'pdf.receipt' : 'pdf.invoice';
+            $mailType = $isPaid ? 'receipt' : 'invoice';
+
+            $pdf = Pdf::loadView($view, compact('payment'));
+
+            // 5. Send Email with Attachment
+            Mail::to($payment->email)->send(new PaymentReceiptMail($payment, $pdf, $mailType));
+
+            return response()->json([
+                'status' => 'success',
+                'message' => "Payment updated to $status and $mailType sent.",
+                'data' => [
+                    'reference' => $payment->reference,
+                    'expiry' => $payment->expires_at
+                ]
+            ], 200);
+
+        } catch (\Exception $e) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'System error during processing',
+                'error_detail' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Manual Download Link for Users
+     */
+    /**
+ * Manual Download Link for Users
+ * Tumeshajiridhisha kuwa Route inaita downloadDoc
+ */
+public function downloadDoc($reference)
+{
+    // 1. Vuta data pamoja na mahusiano yake yote
+    $payment = Payment::with(['course', 'cohort', 'user'])->where('reference', $reference)->firstOrFail();
+    
+    // 2. Angalia kama ameshalipa au bado
+    $isPaid = in_array($payment->status, ['COMPLETED', 'PAID', 'SUCCESS']);
+    
+    // 3. Chagua View na Jina la faili
+    $view = $isPaid ? 'pdf.receipt' : 'pdf.invoice';
+    $filename = $isPaid ? "Receipt-{$reference}.pdf" : "Invoice-{$reference}.pdf";
+
+    // 4. Tengeneza PDF
+    $pdf = Pdf::loadView($view, compact('payment'));
+    
+    // 5. Download
+    return $pdf->download($filename);
+}
+    /**
+ * Get the authenticated user's payment history
+ */
+public function myPayments()
+{
+    $userId = auth()->id();
+
+    // Jaribu kuvuta data bila 'with' kwanza kuona kama itatoka
+    $payments = Payment::where('user_id', $userId)->get();
+
+    return response()->json($payments);
+}
+/**
+ * Admin: View all payments from all users
+ */
+public function allPayments()
+{
+    // Tunavuta malipo yote na taarifa za User, Course, na Cohort
+    $payments = Payment::with(['user', 'course', 'cohort'])
+                ->orderBy('created_at', 'desc')
+                ->get();
+
+    return response()->json($payments);
+}
+
+/**
+ * Admin: Delete a payment record
+ */
+public function deletePayment($id)
+{
+    try {
+        $payment = Payment::findOrFail($id);
+        $payment->delete();
 
         return response()->json([
-            'message' => 'Enrollment started',
-            'enrollment' => $enrollment,
-            'checkout_summary' => [
-                'provider_name' => $cohort->provider->legal_name,
-                'course_title' => $cohort->course->title,
-                'cohort_name' => $cohort->intake_name,
-                'dates' => $cohort->start_date . ' to ' . $cohort->end_date,
-                'venue' => $cohort->venue,
-                'mode' => $cohort->course->mode,
-                'seats_remaining' => $cohort->capacity - $enrolledCount,
-                'price' => $cohort->price
-            ]
-        ]);
+            'status' => 'success',
+            'message' => 'Payment record deleted successfully'
+        ], 200);
+    } catch (\Exception $e) {
+        return response()->json([
+            'status' => 'error',
+            'message' => 'Failed to delete record'
+        ], 500);
     }
+}
 
-    // Confirm payment
-    public function confirmPayment(Request $request, $enrollmentId)
-    {
-        $enrollment = Enrollment::where('id', $enrollmentId)
-            ->where('student_id', Auth::id())
-            ->firstOrFail();
+/**
+ * Provider: View payments for their own courses only
+ */
+public function providerPayments()
+{
+    $providerId = auth()->id();
 
-        if ($enrollment->status !== 'PENDING') {
-            return response()->json(['message' => 'Enrollment not in PENDING status'], 400);
-        }
+    // Tunapata malipo yote ambapo kozi husika inamilikiwa na huyu Provider
+   $payments = Payment::with(['user', 'course', 'cohort'])->get();
 
-        // TODO: integrate with payment gateway
-        $paymentSuccess = $request->input('payment_success', true);
+    return response()->json($payments);
+}
+/**
+ * Provider: View all student enrollments for their courses
+ */
+/**
+ * Provider: View all student enrollments for their courses
+ */
 
-        if ($paymentSuccess) {
-            $enrollment->status = 'CONFIRMED';
-            $enrollment->save();
-            return response()->json(['message' => 'Enrollment confirmed', 'enrollment' => $enrollment]);
-        } else {
-            $enrollment->status = 'CANCELLED';
-            $enrollment->save();
-            return response()->json(['message' => 'Payment failed, enrollment cancelled', 'enrollment' => $enrollment]);
-        }
-    }
+public function providerEnrollments()
+{
+    try {
+        $providerId = auth()->id(); // Hii ndiyo ID ya User aliyelogin (Provider)
 
-    // View student enrollments
-    public function myEnrollments()
-    {
-        $studentId = Auth::id();
-
-        $enrollments = Enrollment::where('student_id', $studentId)
-            ->with('course', 'cohort', 'provider')
+        $enrollments = Payment::with(['user', 'course', 'cohort'])
+            ->whereHas('course', function ($query) use ($providerId) {
+                // BADILISHA HAPA: Tumia jina halisi la column iliyopo kwenye table ya 'courses'
+                // Kama kwenye database inaitwa 'provider_id', basi iwe hivi:
+                $query->where('provider_id', $providerId); 
+                
+                // AU kama inaitwa 'created_by', badilisha iwe:
+                // $query->where('created_by', $providerId);
+            })
+            ->orderBy('created_at', 'desc')
             ->get();
 
         return response()->json($enrollments);
+
+    } catch (\Exception $e) {
+        return response()->json(['error' => $e->getMessage()], 500);
     }
+}
+
 }

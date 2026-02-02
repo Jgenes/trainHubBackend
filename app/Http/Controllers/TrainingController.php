@@ -11,39 +11,38 @@ class TrainingController extends Controller
      * Display a listing of courses with their cohorts.
      */
     public function index(Request $request)
-    {
-        // Fetch only Published courses with their OPEN cohorts
-        $courses = Course::where('status', 'Published')
-            ->with([
-                'provider:id,name', // Only id and name from provider
-                'cohorts' => function ($query) {
-                    $query->where('status', 'OPEN')
-                        ->whereDate('registration_deadline', '>=', now())
-                        ->select(
-                            'id',
-                            'course_id',
-                            'intake_name',
-                            'start_date',
-                            'capacity',
-                            'seats_taken',
-                            'price',
-                            'status'
-                        );
-                }
-            ])
-            ->get();
+{
+    $query = Course::where('status', 'Published')
+        ->with([
+            'provider:id,name,logo', 
+            'cohorts' => function ($query) {
+                $query->where('status', 'OPEN')
+                      // If you are testing and don't see courses, 
+                      // check if your registration_deadline is in the past!
+                      ->whereDate('registration_deadline', '>=', now()) 
+                      ->select(
+                          'id', 'course_id', 'intake_name', 'start_date', 
+                          'capacity', 'seats_taken', 'price', 'status'
+                      );
+            }
+        ]);
 
-        // Dynamically calculate remaining seats for each cohort
-        $courses->each(function ($course) {
-            $course->cohorts->each(function ($cohort) {
-                $cohort->remaining_seats = $cohort->capacity - $cohort->seats_taken;
-            });
-        });
-
-        return response()->json($courses);
+    // Apply basic search if provided via query params
+    if ($request->filled('name')) {
+        $query->where('title', 'like', '%' . $request->name . '%');
     }
 
-   
+    $courses = $query->get();
+
+    // Map remaining seats and ensure categories exist for frontend filtering
+    $courses->each(function ($course) {
+        $course->cohorts->each(function ($cohort) {
+            $cohort->remaining_seats = max(0, $cohort->capacity - $cohort->seats_taken);
+        });
+    });
+
+    return response()->json($courses);
+}
 
 public function show($id)
 {

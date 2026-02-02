@@ -47,7 +47,7 @@ class ProviderOnboardingController extends Controller
 
             $user->update([
                 'provider_id'=>$provider->id,
-                'role'=>'PROVIDER_ADMIN'
+                'role'=>'tenant'
             ]);
         });
 

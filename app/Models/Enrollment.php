@@ -20,7 +20,11 @@ class Enrollment extends Model
             $model->id = (string) Str::uuid();
         });
     }
-
+// Ongeza hii ndani ya class Enrollment
+public function course() 
+{ 
+    return $this->belongsTo(Course::class, 'course_id'); 
+}
     public function cohort() { return $this->belongsTo(Cohort::class); }
     public function student() { return $this->belongsTo(User::class, 'student_id'); }
     public function invoice() { return $this->hasOne(Invoice::class); }
