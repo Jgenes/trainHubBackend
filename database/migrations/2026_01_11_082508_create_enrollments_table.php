@@ -10,7 +10,7 @@ return new class extends Migration {
             $table->id();
             $table->foreignId('user_id')->constrained('users')->cascadeOnDelete();
             $table->foreignId('cohort_id')->constrained('cohorts')->cascadeOnDelete();
-            $table->enum('status',['PENDING','PAID','CANCELLED'])->default('PENDING');
+            $table->enum('status',['PENDING','PAID','CANCELLED'])->default('PAID');
             $table->decimal('amount', 10, 2)->default(0);
             $table->timestamps();
         });

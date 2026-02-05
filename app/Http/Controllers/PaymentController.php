@@ -1,10 +1,11 @@
 <?php
-    namespace App\Http\Controllers;
+
+namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use App\Services\PesaPalService;
 use App\Models\Payment;
-use App\Models\Enrollment; // Hakikisha umei-import
+use App\Models\Enrollment;
 use Illuminate\Support\Facades\Log;
 
 class PaymentController extends Controller
@@ -20,27 +21,30 @@ class PaymentController extends Controller
     {
         try {
             $user = auth()->user();
-            if (!$user) {
-                return response()->json(['success' => false, 'message' => 'Login kwanza'], 401);
-            }
-
             $course = \App\Models\Course::findOrFail($request->course_id);
 
-            // 1. Tengeneza Payment Record
+            // Safisha namba ya simu
+            $phone = preg_replace('/\D/', '', $request->phone ?? $user->phone_number);
+            if (str_starts_with($phone, '0')) { $phone = '255' . substr($phone, 1); }
+
+            // 1. Create Local Record
             $payment = Payment::create([
                 'reference'     => 'TRH-' . strtoupper(uniqid()),
                 'user_id'       => $user->id,
                 'course_id'     => $course->id,
                 'cohort_id'     => $request->cohort_id, 
-                'first_name'    => $request->name ?? $user->name, 
-                'email'         => $request->email ?? $user->email,
-                'phone_number'  => $request->phone ?? $user->phone_number,
-                'amount'        => (float)($request->amount ?? $course->price ?? 0),
+                'first_name'    => $user->name, 
+                'email'         => $user->email,
+                'phone_number'  => $phone,
+                'amount'        => (float)$request->amount,
                 'currency'      => 'TZS',
                 'status'        => 'PENDING',
             ]);
 
+            // 2. PesaPal Flow
             $token = $this->pesapal->getAccessToken();
+            if (!$token) return response()->json(['success' => false, 'message' => 'Auth Token Failed'], 500);
+
             $ipnId = $this->pesapal->getIpnId($token);
 
             $orderData = [
@@ -60,19 +64,12 @@ class PaymentController extends Controller
 
             $result = $this->pesapal->submitOrder($orderData, $token);
 
-            // 2. MUHIMU: Hifadhi tracking_id inayotoka PesaPal
             if (isset($result['order_tracking_id'])) {
                 $payment->update(['tracking_id' => $result['order_tracking_id']]);
+                return response()->json(['success' => true, 'redirect_url' => $result['redirect_url']]);
             }
 
-            if (isset($result['redirect_url'])) {
-                return response()->json([
-                    'success' => true,
-                    'redirect_url' => $result['redirect_url']
-                ]);
-            }
-
-            return response()->json(['success' => false, 'message' => 'PesaPal Connection Failed'], 500);
+            return response()->json(['success' => false, 'message' => 'PesaPal Submission Failed'], 500);
 
         } catch (\Exception $e) {
             Log::error("Payment Error: " . $e->getMessage());
@@ -80,48 +77,34 @@ class PaymentController extends Controller
         }
     }
 
-    public function callback(Request $request)
-    {
-        $trackingId = $request->query('OrderTrackingId');
-        if (!$trackingId) return response()->json(['message' => 'No tracking ID'], 400);
+   public function callback(Request $request)
+{
+    $trackingId = $request->query('OrderTrackingId');
+    $token = $this->pesapal->getAccessToken();
+    $statusResponse = $this->pesapal->getTransactionStatus($trackingId, $token);
 
-        $token = $this->pesapal->getAccessToken();
-        $statusResponse = $this->pesapal->getTransactionStatus($trackingId, $token);
+    $payment = Payment::where('tracking_id', $trackingId)->first();
+    
+    if ($payment) {
+        $status = strtoupper($statusResponse['payment_status_description'] ?? 'PENDING');
+        
+        // Update status ya payment
+        $payment->update(['status' => $status]);
 
-        // 3. Tafuta Payment kwa trackingId
-        $payment = Payment::where('tracking_id', $trackingId)->first();
-
-        if ($payment) {
-            $pesapalStatus = $statusResponse['payment_status_description'] ?? 'UNKNOWN';
-
-            // 4. Update Status ya Payment
-            $payment->update(['status' => $pesapalStatus]);
-
-            // 5. AUTOMATIC ENROLLMENT LOGIC
-            // PesaPal status ya mafanikio ni "Completed"
-            if (strtoupper($pesapalStatus) === 'COMPLETED' || strtoupper($pesapalStatus) === 'PAID') {
-                
-                // Zuia duplicate enrollment
-                $exists = Enrollment::where('user_id', $payment->user_id)
-                                    ->where('cohort_id', $payment->cohort_id)
-                                    ->exists();
-
-                if (!$exists) {
-                    Enrollment::create([
-                        'user_id'   => $payment->user_id,
-                        'cohort_id' => $payment->cohort_id,
-                        'amount'    => $payment->amount,
-                        'status'    => 'PAID',
-                    ]);
-                    Log::info("Enrollment successful for User: " . $payment->user_id);
-                }
-            }
+        // Kama malipo yamekamilika, mpe kozi
+        if (in_array($status, ['COMPLETED', 'PAID'])) {
+            Enrollment::firstOrCreate([
+                'user_id' => $payment->user_id,
+                'cohort_id' => $payment->cohort_id
+            ], [
+                'amount' => $payment->amount,
+                'status' => 'PAID'
+            ]);
         }
-
-        // Kwa API, rudisha JSON. Kwa Web, rudisha View.
-        return response()->json([
-            'status' => $pesapalStatus,
-            'payment' => $payment
-        ]);
     }
+
+    // BADALA YA JSON: Mpeleke mteja kwenye Success Page ya React
+    // Hakikisha umeandika link kamili ya frontend yako
+    return redirect()->away(env('FRONTEND_URL', 'http://localhost:5173/') . '/payment-success?status=' . $status);
+}
 }

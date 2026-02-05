@@ -34,5 +34,11 @@ return [
             'channel' => env('SLACK_BOT_USER_DEFAULT_CHANNEL'),
         ],
     ],
+    'pesapal' => [
+    'key'    => env('PESAPAL_CONSUMER_KEY'),
+    'secret' => env('PESAPAL_CONSUMER_SECRET'),
+    'url'    => env('PESAPAL_URL'),
+    'mode'   => env('PESAPAL_MODE'),
+],
 
 ];

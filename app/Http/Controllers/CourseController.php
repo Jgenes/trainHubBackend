@@ -1,145 +1,137 @@
 <?php
+
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use App\Models\Course;
-use App\Models\Note;
-use App\Models\Announcement;
-use App\Models\LearningTool;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class CourseController extends Controller
 {
-    // List all courses for provider
     public function index()
     {
         $courses = Course::where('provider_id', Auth::id())->get();
         return response()->json($courses);
     }
 
-    // Create a course
+    // App/Http/Controllers/CourseController.php
+
+public function publicIndex() {
+    // Tumia 'makeHidden' ili kuzuia data nyingine nzito zisizo lazima
+    return response()->json(\App\Models\Course::all()->makeHidden(['created_at', 'updated_at']));
+}
     public function store(Request $request)
     {
+        // 1. Validation
         $request->validate([
             'title' => 'required|string|max:255',
             'category' => 'required|string',
-            'mode' => 'required|string',
-            'short_description' => 'required|string',
-            'long_description' => 'required|string',
-            'learning_outcomes' => 'nullable|array',
-            'skills' => 'nullable|array',
-            'requirements' => 'nullable|array',
-            'contents' => 'required|array',
-            'contents.*.title' => 'required|string',
-            'contents.*.description' => 'required|string',
-            'contents.*.link' => 'nullable|string',
-            'contents.*.video' => 'nullable|file|mimes:mp4,mov,avi,webm|max:204800',
-            'contents.*.handouts' => 'nullable|file|mimes:pdf|max:20480',
-            'banner' => 'nullable|image|mimes:jpg,jpeg,png',
+            'banner' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:5120', // Max 5MB
         ]);
 
-        $contents = $request->contents;
+        try {
+            return DB::transaction(function () use ($request) {
+                // PHP inashindwa kusoma nested FormData arrays wakati mwingine, 
+                // tunahakikisha tunapata contents vizuri
+                $contents = $request->contents;
+                
+                // Ikiwa React imetuma kama JSON string (mara nyingi hutokea kwenye FormData complex)
+                if (is_string($contents)) {
+                    $contents = json_decode($contents, true);
+                }
 
-        // Handle video & handouts
-        foreach ($contents as $i => $section) {
-            if (isset($section['video']) && $section['video'] instanceof \Illuminate\Http\UploadedFile) {
-                $file = $section['video'];
-                $fileName = time() . "_video_{$i}." . $file->getClientOriginalExtension();
-                $file->move(public_path('uploads/course_videos'), $fileName);
-                $contents[$i]['video'] = 'uploads/course_videos/' . $fileName;
-            }
+                if (!is_array($contents)) {
+                    throw new \Exception("Course contents are missing or invalid.");
+                }
 
-            if (isset($section['handouts']) && $section['handouts'] instanceof \Illuminate\Http\UploadedFile) {
-                $file = $section['handouts'];
-                $fileName = time() . "_handouts_{$i}." . $file->getClientOriginalExtension();
-                $file->move(public_path('uploads/course_handouts'), $fileName);
-                $contents[$i]['handouts'] = 'uploads/course_handouts/' . $fileName;
-            }
+                foreach ($contents as $i => $section) {
+                    // A. Shughulikia Main Video
+                    if ($request->hasFile("contents.$i.video")) {
+                        $videoFile = $request->file("contents.$i.video");
+                        $vName = time() . "_main_v_{$i}." . $videoFile->getClientOriginalExtension();
+                        $videoFile->move(public_path('uploads/courses/videos'), $vName);
+                        $contents[$i]['video'] = 'uploads/courses/videos/' . $vName;
+                    }
+
+                    // B. Shughulikia Multiple PDF Handouts
+                    $uploadedHandouts = [];
+                    if ($request->hasFile("contents.$i.handouts")) {
+                        $files = $request->file("contents.$i.handouts");
+                        foreach ($files as $fileKey => $file) {
+                            $fileName = time() . "_h_{$i}_{$fileKey}." . $file->getClientOriginalExtension();
+                            $file->move(public_path('uploads/courses/docs'), $fileName);
+                            $uploadedHandouts[] = 'uploads/courses/docs/' . $fileName;
+                        }
+                        $contents[$i]['handouts'] = $uploadedHandouts;
+                    } else {
+                        // Kama hakuna file jipya, baki na zilizopo au empty array
+                        $contents[$i]['handouts'] = $contents[$i]['handouts'] ?? [];
+                    }
+
+                    // C. Video Links (Zinakuja kama array tayari)
+                    $contents[$i]['video_links'] = $section['video_links'] ?? [];
+                }
+
+                // D. Handle Banner
+                $bannerPath = null;
+                if ($request->hasFile('banner')) {
+                    $bannerFile = $request->file('banner');
+                    $bannerName = time() . '_b.' . $bannerFile->getClientOriginalExtension();
+                    $bannerFile->move(public_path('uploads/banners'), $bannerName);
+                    $bannerPath = 'uploads/banners/' . $bannerName;
+                }
+
+                // 2. Create Course
+                $course = Course::create([
+                    'provider_id'       => Auth::id(),
+                    'title'             => $request->title,
+                    'category'          => $request->category,
+                    'mode'              => $request->mode ?? 'Online',
+                    'short_description' => $request->short_description,
+                    'long_description'  => $request->long_description,
+                    'learning_outcomes' => $request->learning_outcomes, // Hakikisha model ina casts to array
+                    'skills'            => $request->skills,
+                    'requirements'      => $request->requirements,
+                    'contents'          => $contents, 
+                    'banner'            => $bannerPath,
+                    'status'            => 'Draft'
+                ]);
+
+                // 3. Return Response (Ufunguo wa 'course' ni muhimu kwa React)
+                return response()->json([
+                    'message' => 'Course saved successfully!',
+                    'course'  => $course
+                ], 201);
+            });
+
+        } catch (\Exception $e) {
+            Log::error("Course Creation Error: " . $e->getMessage());
+            return response()->json([
+                'error' => 'Failed to save course',
+                'details' => $e->getMessage()
+            ], 500);
         }
-
-        $courseData = [
-            'provider_id' => Auth::id(),
-            'title' => $request->title,
-            'category' => $request->category,
-            'mode' => $request->mode,
-            'short_description' => $request->short_description,
-            'long_description' => $request->long_description,
-            'learning_outcomes' => $request->learning_outcomes ?? [],
-            'skills' => $request->skills ?? [],
-            'requirements' => $request->requirements ?? [],
-            'contents' => $contents,
-            'status' => 'Draft',
-        ];
-
-        if ($request->hasFile('banner')) {
-            $file = $request->file('banner');
-            $fileName = time() . "_banner." . $file->getClientOriginalExtension();
-            $file->move(public_path('uploads/banners'), $fileName);
-            $courseData['banner'] = 'uploads/banners/' . $fileName;
-        }
-
-        $course = Course::create($courseData);
-        return response()->json(['message' => 'Course created successfully', 'course' => $course]);
     }
 
-    // Show a single course
     public function show($id)
     {
-        $course = Course::where('id', $id)->where('provider_id', Auth::id())->firstOrFail();
+        $course = Course::where('id', $id)
+            ->where('provider_id', Auth::id())
+            ->firstOrFail();
         return response()->json($course);
     }
 
-    // Delete course
     public function destroy($id)
     {
-        $course = Course::where('id', $id)->where('provider_id', Auth::id())->firstOrFail();
+        $course = Course::where('id', $id)
+            ->where('provider_id', Auth::id())
+            ->firstOrFail();
+        
+        // Futa faili za banner/video hapa ikiwa ni lazima
         $course->delete();
         return response()->json(['success' => true, 'message' => 'Course deleted successfully!']);
     }
-
-    
-    public function submitAll(Request $request, $courseId)
-{
-    // NOTES
-    if($request->has('note_title') && $request->hasFile('note_files')) {
-        foreach ($request->file('note_files') as $file) {
-            $path = $file->store('course_notes', 'public');
-            \App\Models\Note::create([
-                'course_id' => $courseId,
-                'title' => $request->note_title,
-                'file_path' => asset('storage/' . $path)
-            ]);
-        }
-    }
-
-    // ANNOUNCEMENT
-    if($request->has('announcement_title') && $request->has('announcement_body')) {
-        $announcement = \App\Models\Announcement::create([
-            'course_id' => $courseId,
-            'title' => $request->announcement_title,
-            'content' => $request->announcement_body
-        ]);
-
-        if($request->hasFile('announcement_files')) {
-            foreach ($request->file('announcement_files') as $file) {
-                $filePath = $file->store('announcement_files', 'public');
-                // optional: create a model if you track files separately
-                // \App\Models\AnnouncementFile::create([...]);
-            }
-        }
-    }
-
-    // TOOL
-    if($request->has('tool_name') && $request->has('tool_link')) {
-        \App\Models\LearningTool::create([
-            'course_id' => $courseId,
-            'title' => $request->tool_name,
-            'link' => $request->tool_link,
-            'description' => $request->tool_description
-        ]);
-    }
-
-    return response()->json(['message' => 'All items submitted successfully!'], 201);
-}
-
 }

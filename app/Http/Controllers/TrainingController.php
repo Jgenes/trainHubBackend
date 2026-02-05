@@ -4,90 +4,77 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use App\Models\Course;
+use App\Models\Enrollment; 
 use App\Models\Cohort;
+use Illuminate\Support\Facades\Auth; // HII ILIKUWA IMEKOSEKANA!
+
 class TrainingController extends Controller
 {
-    /**
-     * Display a listing of courses with their cohorts.
-     */
     public function index(Request $request)
 {
-    $query = Course::where('status', 'Published')
-        ->with([
-            'provider:id,name,logo', 
-            'cohorts' => function ($query) {
-                $query->where('status', 'OPEN')
-                      // If you are testing and don't see courses, 
-                      // check if your registration_deadline is in the past!
-                      ->whereDate('registration_deadline', '>=', now()) 
-                      ->select(
-                          'id', 'course_id', 'intake_name', 'start_date', 
-                          'capacity', 'seats_taken', 'price', 'status'
-                      );
+    try {
+        $userId = Auth::guard('sanctum')->id();
+
+        $query = Course::where('status', 'Published')
+            ->with([
+                'provider:id,name,logo', 
+                'cohorts'
+            ]);
+
+        if ($request->filled('name')) {
+            $query->where('title', 'like', '%' . $request->name . '%');
+        }
+
+        $courses = $query->get();
+
+        $courses->transform(function ($course) use ($userId) {
+            $course->is_enrolled = false;
+
+            if ($userId) {
+                // REKEBISHO HAPA: Angalia table ya Payment badala ya Enrollment
+                // Na hakikisha status inalingana na inavyookolewa (PAID au COMPLETED)
+                $course->is_enrolled = \App\Models\Payment::where('user_id', $userId)
+                    ->where('course_id', $course->id)
+                    ->whereIn('status', ['COMPLETED', 'PAID']) 
+                    ->exists();
             }
-        ]);
 
-    // Apply basic search if provided via query params
-    if ($request->filled('name')) {
-        $query->where('title', 'like', '%' . $request->name . '%');
+            if($course->cohorts) {
+                $course->cohorts->each(function ($cohort) {
+                    $cohort->remaining_seats = max(0, $cohort->capacity - $cohort->seats_taken);
+                });
+            }
+            return $course;
+        });
+
+        return response()->json($courses);
+
+    } catch (\Exception $e) {
+        return response()->json(['error' => $e->getMessage()], 500);
     }
+}
 
-    $courses = $query->get();
+    public function show($id)
+    {
+        $course = Course::with([
+            'provider:id,name',
+            'cohorts' // Hapa pia tumeondoa filter ili kadi isipotee
+        ])->where('status', 'Published')->find($id);
 
-    // Map remaining seats and ensure categories exist for frontend filtering
-    $courses->each(function ($course) {
+        if (!$course) {
+            return response()->json(['message' => 'Course not found'], 404);
+        }
+
+        // Handle JSON contents
+        if (is_string($course->contents)) {
+            $course->contents = json_decode($course->contents, true) ?: [];
+        }
+
         $course->cohorts->each(function ($cohort) {
             $cohort->remaining_seats = max(0, $cohort->capacity - $cohort->seats_taken);
+            $cohort->enrolled = $cohort->seats_taken;
         });
-    });
 
-    return response()->json($courses);
-}
-
-public function show($id)
-{
-    // Fetch course with provider and cohorts
-    $course = Course::with([
-        'provider:id,name',
-        'cohorts' => function ($query) {
-            $query->where('status', 'OPEN')
-                  ->whereDate('registration_deadline', '>=', now())
-                  ->select(
-                      'id',
-                      'course_id',
-                      'intake_name',
-                      'start_date',
-                      'capacity',
-                      'seats_taken',
-                      'registration_deadline',
-                      'schedule_text'
-                  );
-        }
-    ])->where('status', 'Published')->find($id);
-
-    if (!$course) {
-        return response()->json(['message' => 'Course not found'], 404);
+        return response()->json($course);
     }
-
-    // Decode JSON contents from the course table
-    if ($course->contents) {
-        if (is_string($course->contents)) {
-            $decoded = json_decode($course->contents, true);
-            $course->contents = $decoded ?: [];
-        }
-    } else {
-        $course->contents = [];
-    }
-
-    // Calculate remaining seats for cohorts
-    $course->cohorts->each(function ($cohort) {
-        $cohort->remaining_seats = $cohort->capacity - $cohort->seats_taken;
-        $cohort->enrolled = $cohort->seats_taken;
-    });
-
-    return response()->json($course);
-}
-
-
-
 }
