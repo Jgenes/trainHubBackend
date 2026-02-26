@@ -20,8 +20,12 @@ class CourseController extends Controller
     // App/Http/Controllers/CourseController.php
 
 public function publicIndex() {
-    // Tumia 'makeHidden' ili kuzuia data nyingine nzito zisizo lazima
-    return response()->json(\App\Models\Course::all()->makeHidden(['created_at', 'updated_at']));
+    // Tunapakia kozi pamoja na cohorts zake kwa mpigo mmoja (Eager Loading)
+    $courses = \App\Models\Course::with(['cohorts' => function($query) {
+        $query->where('status', 'OPEN'); // Optional: kama unataka cohorts za wazi tu
+    }])->get();
+
+    return response()->json($courses->makeHidden(['created_at', 'updated_at']));
 }
     public function store(Request $request)
     {
@@ -134,4 +138,77 @@ public function publicIndex() {
         $course->delete();
         return response()->json(['success' => true, 'message' => 'Course deleted successfully!']);
     }
+
+   public function update(Request $request, $id)
+{
+    $request->validate([
+        'title' => 'required|string|max:255',
+        'category' => 'required|string',
+        'banner' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:5120',
+    ]);
+
+    try {
+        return DB::transaction(function () use ($request, $id) {
+            $course = Course::where('id', $id)
+                ->where('provider_id', Auth::id())
+                ->firstOrFail();
+
+            // --- 1. HANDLE ARRAYS (Taja column majina ya DB) ---
+            $processArray = function($fieldName) use ($request, $course) {
+                $data = $request->input($fieldName);
+                if (!$data) return $course->$fieldName; // Kama hakuna data mpya, tumia ya zamani
+
+                if (is_string($data)) {
+                    $decoded = json_decode($data, true);
+                    return (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) 
+                        ? $decoded 
+                        : array_filter(array_map('trim', explode("\n", $data)));
+                }
+                return $data;
+            };
+
+            // Hakikisha hapa unatumia majina ya column za DB (snake_case)
+            $course->learning_outcomes = $processArray('learning_outcomes');
+            $course->requirements      = $processArray('requirements');
+            $course->skills            = $processArray('skills');
+
+            // --- 2. HANDLE BANNER ---
+            if ($request->hasFile('banner')) {
+                $bannerFile = $request->file('banner');
+                $bannerName = time() . '_b.' . $bannerFile->getClientOriginalExtension();
+                $bannerFile->move(public_path('uploads/banners'), $bannerName);
+                $bannerPath = 'uploads/banners/' . $bannerName;
+
+                if ($course->banner && file_exists(public_path($course->banner))) {
+                    @unlink(public_path($course->banner));
+                }
+                $course->banner = $bannerPath;
+            }
+
+            // --- 3. UPDATE FIELDS (Taja moja baada ya nyingine kuzuia Unknown Column error) ---
+            $course->title = $request->input('title');
+            $course->category = $request->input('category');
+            $course->mode = $request->input('mode', $course->mode);
+            $course->short_description = $request->input('short_description', $course->short_description);
+            $course->long_description = $request->input('long_description', $course->long_description);
+            // $course->price = $request->input('price', $course->price);
+            $course->status = $request->input('status', $course->status);
+
+            $course->save();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Course updated successfully',
+                'course'  => $course
+            ]);
+        });
+    } catch (\Exception $e) {
+        Log::error('Course Update Error: ' . $e->getMessage());
+        return response()->json([
+            'success' => false,
+            'error'   => 'Failed to update course',
+            'details' => $e->getMessage() // Hapa ndipo ilipokuambia Column not found
+        ], 500);
+    }
+}
 }

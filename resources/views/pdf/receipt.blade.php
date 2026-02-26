@@ -12,6 +12,7 @@
     <style>
       body {
         font-family: "arial", sans-serif;
+        color: gray;
       }
       .receipt-card {
         border: 1px solid #eee;
@@ -47,12 +48,14 @@
       }
       .value {
         text-align: right;
-        font-weight: bold;
+        font-weight: 300;
       }
       .container {
         position: relative;
         top: 30px;
       }
+      
+   
     </style>
   </head>
   <body>
@@ -70,19 +73,22 @@ $base64 = 'data:image/' . $type . ';base64,' . base64_encode($data);
 @endphp
 
 <img src="{{ $base64 }}" width="150" height="50">              </div>
-              <hr />
+              <p style="color:gray">-------------------------------------------------------</p>
+              <h5 style="position:relative; top:-10px; font-weight:200">RECEIPT</h5>
               <div class="amount">
                 <i class="bi bi-check-circle"></i>
-{{ $payment->currency }} {{ number_format($payment->amount, 2) }}              </div>
-              <hr />
+              <span style="font-size:17px; font-weight:200; position:relative; top:-15px; color: black">{{ $payment->currency }} {{ number_format($payment->amount, 2) }} </span>            
+              </div>
+              <p style="color:gray; position:relative; top:-19px">-------------------------------------------------------</p>
             </div>
 
-            <table>
+            <table style="position:relative; top: -20px">
               <tr>
                 <td class="label" style="font-size: 13px">From</td>
                 <td class="value">{{ $payment->first_name }} {{ $payment->last_name }}</td>
               </tr>
-              <tr>
+             
+              <tr style="position:relative; top: 20px">
                 <td class="label">Training</td>
                 <td class="value"> @if($payment->course)
             {{ $payment->course->title }} 
@@ -90,20 +96,22 @@ $base64 = 'data:image/' . $type . ';base64,' . base64_encode($data);
             N/A
         @endif</td>
               </tr>
-              <tr>
-                <td class="label">Reference</td>
+              
+              <tr style="position:relative; top: 20px">
+                  <td class="label">Reference</td>
                 <td class="value">{{ $payment->reference }}</td>
               </tr>
-              <tr>
-                <td class="label">Date</td>
+              
+              <tr style="position:relative; top: 20px">
+                  <td class="label">Date</td>
                 <td class="value">{{ $payment->created_at->format('d/m/Y g:i A') }} </td>
               </tr>
-              <tr>
-                <td class="label">Status</td>
-                <td class="value" style="color: #28a745">Completed</td>
+              
+              <tr style="position:relative; top: 20px">                <td class="label">Status</td>
+                <td class="value" style="color: #28a745">PAID</td>
               </tr>
             </table>
-            <hr />
+              <p style="color:gray; position:relative;">-------------------------------------------------------</p>
 
             <div class="text-center" style="margin-top: 20px">
               <p style="font-size: 9px; color: #888">

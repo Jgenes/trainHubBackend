@@ -3,9 +3,17 @@
 <body style="font-family:Arial;background:#f9fafb;padding:30px;">
     <div style="max-width:600px;margin:auto;background:white;padding:30px;border-radius:8px;">
         
-        <h2 style="color:#1E40AF;">Training Hub Login</h2>
+        @php $purpose = $purpose ?? 'login'; @endphp
 
-        <p>Your One-Time Password (OTP):</p>
+        <h2 style="color:#1E40AF;">Training Hub {{ $purpose === 'payment' ? 'Payment' : 'Login' }}</h2>
+
+        <p>
+            @if($purpose === 'payment')
+                Your payment verification One-Time Password (OTP):
+            @else
+                Your One-Time Password (OTP):
+            @endif
+        </p>
 
         <h1 style="letter-spacing:6px;color:#1E40AF;">{{ $otp }}</h1>
 

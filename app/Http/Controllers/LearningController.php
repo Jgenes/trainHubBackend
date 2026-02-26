@@ -54,9 +54,13 @@ class LearningController extends Controller
                 'description' => $item['description'] ?? '',
                 'notes'       => $item['notes_text'] ?? '',
                 // Hapa tunatengeneza full URL ya video
-                'video_url'   => !empty($item['video']) ? asset('storage/' . $item['video']) : null,
+                'video_url'   => !empty($item['video']) ? (
+                    str_starts_with($item['video'], 'uploads/') ? asset($item['video']) : asset('storage/' . ltrim($item['video'], '/'))
+                ) : null,
                 'links'       => $item['video_links'] ?? [],
-                'handouts'    => isset($item['handouts']) ? collect($item['handouts'])->map(fn($h) => asset('storage/' . $h)) : []
+                'handouts'    => isset($item['handouts']) ? collect($item['handouts'])->map(function($h) {
+                    return str_starts_with($h, 'uploads/') ? asset($h) : asset('storage/' . ltrim($h, '/'));
+                }) : []
             ];
         });
 

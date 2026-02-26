@@ -26,5 +26,9 @@ class Provider extends Model
 {
     return $this->hasOne(Provider::class, 'user_id');
 }
-
+ public function user()
+    {
+        return $this->belongsTo(User::class, 'created_by'); 
+        // au 'user_id' kama provider table ina user_id
+    }
 }

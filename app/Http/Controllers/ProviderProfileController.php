@@ -1,28 +1,26 @@
 <?php
 
 namespace App\Http\Controllers;
- // Hakikisha folder structure ni app/Http/Controllers/Provider
-use App\Http\Controllers\Controller;
+
 use App\Models\Provider;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 
 class ProviderProfileController extends Controller
 {
-    // Kupata taarifa za profile
-    public function index()
-    {
-        // Auth::id() itafanya kazi kama umepita kwenye Sanctum middleware
-        $provider = Provider::where('user_id', Auth::id())->first();
+public function index()
+{
+    // Hakikisha Model ya Provider ina uhusiano na User
+    $provider = Provider::where('created_by', Auth::id())->first();
 
-        if (!$provider) {
-            return response()->json(['message' => 'Provider profile not found'], 404);
-        }
-
-        return response()->json($provider);
+    if (!$provider) {
+        return response()->json(['message' => 'Profile not found'], 404);
     }
 
-    // Kupasasisha taarifa (Update)
+    // Usiiweke ndani ya 'data' => [] ili React isipate undefined
+    return response()->json($provider);
+}
+
     public function update(Request $request)
     {
         $provider = Provider::where('user_id', Auth::id())->firstOrFail();
@@ -43,7 +41,7 @@ class ProviderProfileController extends Controller
         $provider->update($validated);
 
         return response()->json([
-            'message' => 'Profile updated successfully!',
+            'message' => 'Profile imesasishwa!',
             'data' => $provider
         ]);
     }

@@ -40,5 +40,8 @@ public function completedLessons()
 {
     return $this->belongsToMany(Lesson::class, 'lesson_user');
 }
+public function providerProfile() {
+        return $this->hasOne(Provider::class, 'user_id');
+    }
 
 }

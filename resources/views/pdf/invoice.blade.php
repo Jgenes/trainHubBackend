@@ -15,6 +15,20 @@
 <body>
     <div class="invoice-box">
         <div class="row">
+                <div class="success-icon">
+@php
+$path = public_path('images/logo1.png');
+$type = pathinfo($path, PATHINFO_EXTENSION);
+$data = file_get_contents($path);
+$base64 = 'data:image/' . $type . ';base64,' . base64_encode($data);
+@endphp
+
+<center>
+    <img src="{{ $base64 }}" width="150" height="60">          
+</center>
+</div>
+        </div>
+        <div class="row">
             <div class="col">
                 <h2 style="color: #333;">INVOICE</h2>
                 <strong>To:</strong> {{ $payment->user->name ?? 'Student' }}<br>

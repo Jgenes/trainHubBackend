@@ -7,6 +7,8 @@ use Barryvdh\DomPDF\Facade\Pdf;
 use App\Mail\PaymentReceiptMail;
 use Illuminate\Support\Facades\Mail;
 use Carbon\Carbon;
+use App\Models\Enrollment as EnrollmentModel;
+use Illuminate\Support\Facades\Log;
 
 class EnrollmentController extends Controller
 {
@@ -97,12 +99,18 @@ public function downloadDoc($reference)
     /**
  * Get the authenticated user's payment history
  */
+/**
+ * Get the authenticated user's payment history
+ */
 public function myPayments()
 {
     $userId = auth()->id();
 
-    // Jaribu kuvuta data bila 'with' kwanza kuona kama itatoka
-    $payments = Payment::where('user_id', $userId)->get();
+    // ONGEZA .with(['course', 'cohort']) HAPA CHINI:
+    $payments = Payment::with(['course', 'cohort'])
+                ->where('user_id', $userId)
+                ->orderBy('created_at', 'desc')
+                ->get();
 
     return response()->json($payments);
 }
@@ -148,9 +156,54 @@ public function providerPayments()
     $providerId = auth()->id();
 
     // Tunapata malipo yote ambapo kozi husika inamilikiwa na huyu Provider
-   $payments = Payment::with(['user', 'course', 'cohort'])->get();
+   $payments = Payment::with(['user', 'course', 'cohort'])
+        ->whereHas('course', function ($q) use ($providerId) {
+            $q->where('provider_id', $providerId);
+        })
+        ->orderBy('created_at', 'desc')
+        ->get();
 
     return response()->json($payments);
+}
+
+/**
+ * Provider: Update payment status manually (button click)
+ */
+public function providerUpdatePaymentStatus(Request $request, $id)
+{
+    // 1. Validation ya kile kinachotoka React
+    $request->validate([
+        'status' => 'required|string|in:PENDING,COMPLETED,PAID,FAILED,REFUNDED,CANCELLED,SUCCESS'
+    ]);
+
+    try {
+        // 2. Tafuta Payment pekee (Table: payments)
+        // Tunatumia 'with:course' ili tuweze kufanya security check ya provider_id
+        $payment = \App\Models\Payment::with('course')->findOrFail($id);
+
+        // 3. Security: Je, hii payment inamilikiwa na kozi ya huyu provider?
+        if (!$payment->course || $payment->course->provider_id != auth()->id()) {
+            return response()->json(['message' => 'Unauthorized access'], 403);
+        }
+
+        // 4. Update Status ya Payment pekee
+        $payment->status = strtoupper($request->input('status'));
+        $payment->save();
+
+        // 5. Rudisha majibu (Hapa hatusomi wala kuandika kwenye enrollment table)
+        return response()->json([
+            'status' => 'success',
+            'payment' => $payment
+        ]);
+
+    } catch (\Exception $e) {
+        // Hapa ndipo utaona error kama bado ipo
+        \Illuminate\Support\Facades\Log::error('Payment Update Error: ' . $e->getMessage());
+        return response()->json([
+            'status' => 'error',
+            'message' => $e->getMessage() 
+        ], 500);
+    }
 }
 /**
  * Provider: View all student enrollments for their courses
@@ -159,28 +212,165 @@ public function providerPayments()
  * Provider: View all student enrollments for their courses
  */
 
-public function providerEnrollments()
+/**
+ * Provider: View enrollments for a specific course
+ */
+public function providerCourseEnrollments($courseId)
 {
     try {
-        $providerId = auth()->id(); // Hii ndiyo ID ya User aliyelogin (Provider)
+        $providerId = auth()->id();
 
-        $enrollments = Payment::with(['user', 'course', 'cohort'])
-            ->whereHas('course', function ($query) use ($providerId) {
-                // BADILISHA HAPA: Tumia jina halisi la column iliyopo kwenye table ya 'courses'
-                // Kama kwenye database inaitwa 'provider_id', basi iwe hivi:
-                $query->where('provider_id', $providerId); 
-                
-                // AU kama inaitwa 'created_by', badilisha iwe:
-                // $query->where('created_by', $providerId);
+        // Tunavuta malipo moja kwa moja kutoka table ya Payments
+        $enrollments = \App\Models\Payment::with(['course', 'cohort','user'])
+            ->where('course_id', $courseId)
+            ->whereHas('course', function ($q) use ($providerId) {
+                $q->where('provider_id', $providerId);
             })
-            ->orderBy('created_at', 'desc')
+            ->latest()
             ->get();
 
-        return response()->json($enrollments);
-
+        return response()->json([
+            'course' => \App\Models\Course::find($courseId),
+            'enrollments' => $enrollments
+        ]);
     } catch (\Exception $e) {
         return response()->json(['error' => $e->getMessage()], 500);
     }
 }
 
+/**
+ * Provider: View ALL student enrollments for ALL their courses
+ */
+public function allProviderEnrollments()
+{
+    try {
+        $providerId = auth()->id();
+
+        // JARIBIO A: Je, kuna malipo yoyote yaliyo "COMPLETED" kwenye table?
+        $countAllPaid = \App\Models\Payment::whereIn('status', ['COMPLETED', 'PAID', 'SUCCESS'])->count();
+
+        // JARIBIO B: Je, huyu Provider ana kozi zozote?
+        $providerCourses = \App\Models\Course::where('provider_id', $providerId)->pluck('id');
+
+        // JARIBIO C: Query ya mwisho ikiwa imeboreshwa
+        $enrollments = \App\Models\Payment::with(['course', 'cohort', 'user'])
+            ->whereIn('status', ['COMPLETED', 'PAID', 'SUCCESS'])
+            ->whereIn('course_id', $providerCourses) // Tunatumia ID moja kwa moja badala ya whereHas
+            ->latest()
+            ->get();
+
+        return response()->json([
+            'status' => 'success',
+            'debug' => [
+                'current_provider_id' => $providerId,
+                'total_paid_in_system' => $countAllPaid,
+                'courses_found_for_provider' => $providerCourses,
+            ],
+            'enrollments' => $enrollments
+        ]);
+    } catch (\Exception $e) {
+        return response()->json(['error' => $e.getMessage()], 500);
+    }
 }
+
+public function allProviderCohorts()
+{
+    try {
+        $providerId = auth()->id();
+
+        if (!$providerId) {
+            return response()->json(['error' => 'User not authenticated'], 401);
+        }
+
+        // Tunatumia Query Builder moja kwa moja (DB) ili kuepuka Eloquent issues
+        $cohorts = \DB::table('cohorts')
+            ->join('courses', 'cohorts.course_id', '=', 'courses.id')
+            ->where('courses.provider_id', $providerId)
+            ->select(
+                'cohorts.*', 
+                'courses.title as course_title'
+            )
+            ->orderBy('cohorts.created_at', 'desc')
+            ->get();
+
+        // Ongeza idadi ya wanafunzi kwa kila cohort
+        foreach ($cohorts as $cohort) {
+            $cohort->students_count = \DB::table('payments')
+                ->where('cohort_id', $cohort->id)
+                ->whereIn('status', ['PAID', 'COMPLETED', 'SUCCESS'])
+                ->count();
+        }
+
+        return response()->json([
+            'status' => 'success',
+            'cohorts' => $cohorts
+        ]);
+
+    } catch (\Exception $e) {
+        // Hapa sasa tutaona kosa halisi kama likitokea
+        return response()->json([
+            'status' => 'error',
+            'message' => $e->getMessage(),
+            'file' => $e->getFile(),
+            'line' => $e->getLine()
+        ], 500);
+    }
+}
+
+ public function getAllCohorts()
+{
+    $cohorts = \DB::table('cohorts')
+        ->join('courses', 'cohorts.course_id', '=', 'courses.id') // Join the courses table
+        ->select(
+            'cohorts.*', 
+            'courses.title as course_title' // Alias the title so it's easy to find
+        )
+        ->get();
+
+    return response()->json(['cohorts' => $cohorts]);
+}
+
+    public function getCohortStudents($cohortId)
+{
+    try {
+        $students = \DB::table('payments')
+            // BADILISHA HAPA: Tumia leftJoin badala ya join
+            ->leftJoin('users', 'payments.user_id', '=', 'users.id') 
+            ->where('payments.cohort_id', $cohortId)
+            ->select(
+                'payments.id',
+                'payments.amount',
+                'users.name',         // Kama jina halipo kwenye users table, litaonekana null
+                'users.email',
+                'users.phone_number',
+                'users.organization',
+                'users.position',
+                'users.street',
+                'users.region',
+                'users.city'
+            )
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'students' => $students
+        ], 200);
+
+    } catch (\Exception $e) {
+        return response()->json([
+            'success' => false,
+            'message' => $e->getMessage()
+        ], 500);
+    }
+}
+}
+
+
+
+
+
+
+
+
+
+

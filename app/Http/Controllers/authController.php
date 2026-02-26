@@ -81,49 +81,67 @@ class AuthController extends Controller
     // =====================
     // SEND ACTIVATION EMAIL (Helper)
     // =====================
-    private function sendActivationEmail(User $user, string $token)
-    {
-        $activationLink = env('FRONTEND_URL') . '/activate-account?token=' . $token;
+    // Ndani ya AuthController.php
+private function sendActivationEmail(User $user, string $token)
+{
+    // Hii itatengeneza URL sahihi kulingana na route name
+    $activationLink = route('activate.account', ['token' => $token]);
 
-        try {
-            Mail::to($user->email)->queue(new ActivateAccountMail($activationLink));
-        } catch (\Exception $e) {
-            // Optional: log error
-        }
+    try {
+        Mail::to($user->email)->queue(new ActivateAccountMail($activationLink));
+    } catch (\Exception $e) {
+        \Log::error("Mail Error: " . $e->getMessage());
     }
+}
 
     // =====================
     // ACTIVATE ACCOUNT
     // =====================
  public function activateAccount(Request $request)
 {
-    // 1. Chukuwa email kutoka kwenye URL (?email=...)
+    // Prefer token-based activation (link contains ?token=...), fallback to ?email=...
+    $token = $request->query('token');
     $email = $request->query('email');
 
-    if (!$email) {
-        return response()->json(['message' => 'Email haijapatikana kwenye link.'], 400);
+    if (!$token && !$email) {
+        return response()->json(['message' => 'Activation token or email not provided in link.'], 400);
     }
 
-    // 2. Tafuta user
-    $user = \App\Models\User::where('email', $email)->first();
+    // Find user by token first, otherwise by email
+    if ($token) {
+        $user = \App\Models\User::where('activation_token', $token)->first();
+    } else {
+        $user = \App\Models\User::where('email', $email)->first();
+    }
 
     if (!$user) {
-        return response()->json(['message' => 'Mtumiaji huyu hayupo.'], 404);
+        return response()->json(['message' => 'Invalid or expired activation link.'], 404);
     }
 
-    // 3. Kama tayari asha-activate, usipoteze muda
+    // If token existed, verify expiry
+    if ($token && $user->activation_expires_at && now()->gt($user->activation_expires_at)) {
+        return response()->json(['message' => 'Activation link has expired.'], 400);
+    }
+
+    // If already verified, redirect to frontend login with flag
     if ($user->email_verified_at !== null) {
-        return response()->json(['message' => 'Account ilishakuwa active.'], 200);
+        $frontend = rtrim(env('FRONTEND_URL', 'http://localhost:5173'), '/');
+        return redirect($frontend . '/login?activated=true');
     }
 
-    // 4. Update Database
-    $user->email_verified_at = now();
-    $user->status = 'active'; // Hakikisha column hii ipo, kama huna ifute hii line
-    $user->save();
+    // Mark verified and clear token fields
+    try {
+        $user->email_verified_at = now();
+        $user->is_verified = true;
+        $user->activation_token = null;
+        $user->activation_expires_at = null;
+        $user->save();
+    } catch (\Exception $e) {
+        Log::error('Account activation save error: ' . $e->getMessage());
+    }
 
-    // 5. MUHIMU: Mpeleke mtumiaji kwenye Login Page ya React
-    // Badilisha 5173 iwe port ya React yako (mfano 3000)
-    return redirect('http://localhost:5173/login?activated=true');
+    $frontend = rtrim(env('FRONTEND_URL', 'http://localhost:5173'), '/');
+    return redirect($frontend . '/login?activated=true');
 }
 
     // =====================
@@ -138,14 +156,14 @@ class AuthController extends Controller
 
         $user = User::where('email', $request->email)->first();
 
-        if (!$user) return response()->json(['message' => 'Email haijapatikana'], 404);
+        if (!$user) return response()->json(['message' => 'Email not found'], 404);
 
         if (!Hash::check($request->password, $user->password)) {
-            return response()->json(['message' => 'Nenosiri si sahihi'], 401);
+            return response()->json(['message' => 'Wrong password'], 401);
         }
 
         if (!$user->is_verified) {
-            return response()->json(['message' => 'Tafadhali amilisha akaunti yako kwanza'], 403);
+            return response()->json(['message' => 'Please verify your account first'], 403);
         }
 
         // Generate OTP
@@ -156,13 +174,13 @@ class AuthController extends Controller
         ]);
 
         try {
-            Mail::to($user->email)->send(new LoginOtpMail($otp));
+            Mail::to($user->email)->send(new LoginOtpMail($otp, 'Your Login OTP', 'login'));
         } catch (\Exception $e) {
-            return response()->json(['message' => 'Imeshindwa kutuma barua pepe, jaribu tena.'], 500);
+            return response()->json(['message' => 'Failed to send OTP email. Please try again later.'], 500);
         }
 
         return response()->json([
-            'message' => 'OTP imetumwa kwenye barua pepe yako',
+            'message' => 'OTP sent to your email',
             'email' => $user->email
         ]);
     }
@@ -190,12 +208,12 @@ class AuthController extends Controller
 
     // Send OTP email
     try {
-        Mail::to($user->email)->queue(new LoginOtpMail($otp));
+        Mail::to($user->email)->queue(new LoginOtpMail($otp, 'Your Login OTP', 'login'));
     } catch (\Exception $e) {
         return response()->json(['message' => 'Failed to send OTP email'], 500);
     }
 
-    return response()->json(['message' => 'OTP imetumwa tena']);
+    return response()->json(['message' => 'OTP sent again to your email']);
 }
 
 
@@ -210,11 +228,11 @@ class AuthController extends Controller
         $user = User::where('email', $request->email)->first();
 
         if (!$user || (string)$user->login_otp !== (string)$request->otp) {
-            return response()->json(['message' => 'OTP si sahihi'], 400);
+            return response()->json(['message' => 'OTP is incorrect'], 400);
         }
 
         if ($user->login_otp_expires_at && now()->gt($user->login_otp_expires_at)) {
-            return response()->json(['message' => 'OTP imekwisha muda wake'], 400);
+            return response()->json(['message' => 'OTP has expired'], 400);
         }
 
         $user->update([
@@ -247,22 +265,29 @@ class AuthController extends Controller
 
  private function handleTenantRedirect($user)
 {
-    $provider = Provider::where('user_id', $user->id)->first();
+    // Tafuta kama huyu user ana data kwenye table ya providers
+    $provider = Provider::where('created_by', $user->id)->first();
 
     if (!$provider) {
-        // Ikiwa tenant hana profile bado, mpeleke onboarding
+        // Ikiwa hana data kabisa, mpeleke onboarding
         return '/tenant/onboarding';
     }
 
-    // Hakikisha status inasomeka vizuri (kama ni null au tofauti)
-    $status = strtoupper($provider->status ?? 'PENDING'); 
+    // Convert status kuwa uppercase na ondoa nafasi (trim) ili kuzuia makosa ya spelling
+    $status = strtoupper(trim($provider->status ?? 'PENDING')); 
 
-    return match ($status) {
-        'PENDING'  => '/provider/verification',
-        'APPROVED' => '/provider/dashboard',
-        'REJECTED' => '/tenant/blocked',
-        default    => '/tenant/onboarding', // Badala ya login, mrudishe kuanza upya
-    };
+    // Logic ya kuelekeza kulingana na status
+    if ($status === 'APPROVED') {
+        return '/provider/dashboard';
+    } elseif ($status === 'PENDING') {
+        return '/provider/verification';
+    } elseif ($status === 'REJECTED') {
+        return '/tenant/blocked';
+    }
+
+    // Ikiwa ana data (provider ipo) lakini status haijulikani, 
+    // mpeleke dashboard badala ya kumrudisha onboarding
+    return '/provider/dashboard';
 }
 
 }
