@@ -50,6 +50,51 @@ class CorsTest extends TestCase
             ->assertHeader('Access-Control-Allow-Origin', 'https://traininghubtz.co.tz');
     }
 
+    public function test_cors_check_reports_the_origin_it_received(): void
+    {
+        config()->set('cors.allowed_origins', ['*']);
+
+        $this->withHeaders(['Origin' => 'https://traininghubtz.co.tz'])
+            ->getJson('/api/cors-check')
+            ->assertOk()
+            ->assertHeader('Access-Control-Allow-Origin', 'https://traininghubtz.co.tz')
+            ->assertJson([
+                'ok'             => true,
+                'origin'         => 'https://traininghubtz.co.tz',
+                'origin_allowed' => true,
+            ]);
+    }
+
+    public function test_cors_check_flags_an_origin_outside_the_allowlist(): void
+    {
+        config()->set('cors.allowed_origins', ['https://traininghubtz.co.tz']);
+        config()->set('cors.allowed_origins_patterns', []);
+
+        $this->withHeaders(['Origin' => 'https://evil.example'])
+            ->getJson('/api/cors-check')
+            ->assertOk()
+            ->assertHeaderMissing('Access-Control-Allow-Origin')
+            ->assertJson([
+                'origin'         => 'https://evil.example',
+                'origin_allowed' => false,
+            ]);
+    }
+
+    public function test_preflight_responses_can_be_cached_by_the_browser(): void
+    {
+        config()->set('cors.allowed_origins', ['*']);
+        config()->set('cors.max_age', 600);
+
+        $this->withHeaders([
+            'Origin'                         => 'https://traininghubtz.co.tz',
+            'Access-Control-Request-Method'  => 'POST',
+            'Access-Control-Request-Headers' => 'content-type,authorization',
+        ])->call('OPTIONS', '/api/login')
+            ->assertSuccessful()
+            ->assertHeader('Access-Control-Allow-Origin', 'https://traininghubtz.co.tz')
+            ->assertHeader('Access-Control-Max-Age', '600');
+    }
+
     public function test_explicit_allowlist_is_honoured(): void
     {
         config()->set('cors.allowed_origins', ['https://traininghubtz.co.tz']);

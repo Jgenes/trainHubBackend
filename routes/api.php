@@ -38,6 +38,10 @@ Route::get('/public-courses', [CourseController::class, 'publicIndex']);
 Route::get('/public-reviews', [ReviewController::class, 'publicReviews']);
 Route::get('/top-providers', [PublicController::class, 'topProviders']);
 
+// CORS canary: confirms the request actually reached Laravel. See
+// PublicController::corsCheck() and "Troubleshooting CORS" in the README.
+Route::get('/cors-check', [PublicController::class, 'corsCheck']);
+
 Route::post('/register', [AuthController::class, 'userRegister']);
 Route::post('/tenant-register', [AuthController::class, 'tenantRegister']);
 Route::post('/login', [AuthController::class, 'login'])->name('login');

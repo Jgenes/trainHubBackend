@@ -47,7 +47,11 @@ return [
 
     'exposed_headers' => [],
 
-    'max_age' => 0,
+    // How long (in seconds) a browser may cache a preflight response. `0`
+    // forces an OPTIONS round-trip before every request, which doubles the
+    // traffic and makes a tunnelled API feel much slower. Keep this modest
+    // (minutes, not days) so an allowlist change takes effect quickly.
+    'max_age' => (int) env('CORS_MAX_AGE', 600),
 
     'supports_credentials' => filter_var(env('CORS_SUPPORTS_CREDENTIALS', true), FILTER_VALIDATE_BOOLEAN),
 ];
