@@ -10,6 +10,9 @@
     <h2 style="color: #e67e22;">Kozi imerudishwa kwenye Draft</h2>
     <p>Habari,</p>
     <p>Kozi yako yenye jina <strong>"{{ $course->title }}"</strong> imerudishwa kwenye hali ya Draft na msimamizi.</p>
+    @if(!empty($reason))
+    <p><strong>Sababu:</strong> {{ $reason }}</p>
+    @endif
     <p>Hii inaweza kumaanisha kuna marekebisho yanahitajika kabla ya kuichapisha tena.</p>
     <p>Tafadhali ingia kwenye mfumo kuona maelekezo au kufanya marekebisho.</p>
     <br>

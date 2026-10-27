@@ -35,10 +35,11 @@ return [
         ],
     ],
     'pesapal' => [
-    'key'    => env('PESAPAL_CONSUMER_KEY'),
-    'secret' => env('PESAPAL_CONSUMER_SECRET'),
-    'url'    => env('PESAPAL_URL'),
-    'mode'   => env('PESAPAL_MODE'),
-],
+        'key'    => env('PESAPAL_CONSUMER_KEY'),
+        'secret' => env('PESAPAL_CONSUMER_SECRET'),
+        'url'    => env('PESAPAL_URL', 'https://pay.pesapal.com/v3'),
+        'mode'   => env('PESAPAL_MODE', 'sandbox'),
+        'callback_token'   => env('PAYMENT_CALLBACK_TOKEN'),
+    ],
 
 ];

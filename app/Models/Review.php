@@ -1,19 +1,26 @@
 <?php
 
 namespace App\Models;
+
 use Illuminate\Database\Eloquent\Model;
 
 class Review extends Model
 {
-    protected $table = 'reviews'; // Hakikisha jina la table ni hili
-    protected $guarded = []; // Hii inaruhusu data zote kuingia bila kuzuiliwa
-    public function user()
-{
-    return $this->belongsTo(User::class);
-}
+    protected $table = 'reviews';
+    protected $fillable = ['user_id', 'course_id', 'rating', 'review'];
 
-public function course()
-{
-    return $this->belongsTo(Course::class);
-}
+    protected function casts(): array
+    {
+        return ['rating' => 'integer'];
+    }
+
+    public function user()
+    {
+        return $this->belongsTo(User::class, 'user_id');
+    }
+
+    public function course()
+    {
+        return $this->belongsTo(Course::class, 'course_id');
+    }
 }

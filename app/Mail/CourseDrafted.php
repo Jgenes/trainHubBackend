@@ -11,16 +11,15 @@ class CourseDrafted extends Mailable
 {
     use Queueable, SerializesModels;
 
-    public $course;
-    public $reason; 
-    public function __construct(Course $course)
-    {
-        $this->course = $course;
+    public function __construct(
+        public Course $course,
+        public ?string $reason = null,
+    ) {
     }
 
     public function build()
     {
         return $this->subject('Taarifa: Kozi yako imerudishwa kwenye Draft')
-                    ->view('emails.course_drafted');
+            ->view('emails.course_drafted');
     }
 }

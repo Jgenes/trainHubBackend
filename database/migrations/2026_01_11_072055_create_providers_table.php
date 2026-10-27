@@ -1,4 +1,4 @@
-7<?php
+<?php
 
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
@@ -35,7 +35,7 @@ $table->enum('status',['DRAFT','PENDING','APPROVED','REJECTED','SUSPENDED'])
 
 $table->string('provider_slug')->unique();
 $table->foreignId('created_by');
-    $table->foreignId('user_id')->references('id')->on('users')->onDelete('cascade');
+    $table->foreignId('user_id')->nullable()->references('id')->on('users')->onDelete('cascade');
 $table->timestamps();
 $table->softDeletes();
 

@@ -2,213 +2,329 @@
 
 namespace App\Http\Controllers;
 
-use App\Http\Controllers\Controller;
-use Illuminate\Http\Request;
+use App\Models\Announcement;
 use App\Models\Course;
+use App\Models\Question;
+use Illuminate\Http\Request;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 class CourseController extends Controller
 {
+    /** Courses belonging to the signed-in provider. */
     public function index()
     {
-        $courses = Course::where('provider_id', Auth::id())->get();
+        return response()->json(
+            Course::where('provider_id', Auth::id())->with('cohorts')->latest()->get()
+        );
+    }
+
+    /** Published courses for the public catalogue. */
+    public function publicIndex()
+    {
+        $courses = Course::published()
+            ->with([
+                'provider:id,name',
+                'cohorts' => fn ($q) => $q->where('status', 'OPEN'),
+            ])
+            ->withCount('enrollments')
+            ->latest()
+            ->get();
+
         return response()->json($courses);
     }
 
-    // App/Http/Controllers/CourseController.php
-
-public function publicIndex() {
-    // Tunapakia kozi pamoja na cohorts zake kwa mpigo mmoja (Eager Loading)
-    $courses = \App\Models\Course::with(['cohorts' => function($query) {
-        $query->where('status', 'OPEN'); // Optional: kama unataka cohorts za wazi tu
-    }])->get();
-
-    return response()->json($courses->makeHidden(['created_at', 'updated_at']));
-}
     public function store(Request $request)
     {
-        // 1. Validation
-        $request->validate([
-            'title' => 'required|string|max:255',
-            'category' => 'required|string',
-            'banner' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:5120', // Max 5MB
-        ]);
+        $this->validateCourse($request);
 
         try {
             return DB::transaction(function () use ($request) {
-                // PHP inashindwa kusoma nested FormData arrays wakati mwingine, 
-                // tunahakikisha tunapata contents vizuri
-                $contents = $request->contents;
-                
-                // Ikiwa React imetuma kama JSON string (mara nyingi hutokea kwenye FormData complex)
-                if (is_string($contents)) {
-                    $contents = json_decode($contents, true);
-                }
-
-                if (!is_array($contents)) {
-                    throw new \Exception("Course contents are missing or invalid.");
-                }
-
-                foreach ($contents as $i => $section) {
-                    // A. Shughulikia Main Video
-                    if ($request->hasFile("contents.$i.video")) {
-                        $videoFile = $request->file("contents.$i.video");
-                        $vName = time() . "_main_v_{$i}." . $videoFile->getClientOriginalExtension();
-                        $videoFile->move(public_path('uploads/courses/videos'), $vName);
-                        $contents[$i]['video'] = 'uploads/courses/videos/' . $vName;
-                    }
-
-                    // B. Shughulikia Multiple PDF Handouts
-                    $uploadedHandouts = [];
-                    if ($request->hasFile("contents.$i.handouts")) {
-                        $files = $request->file("contents.$i.handouts");
-                        foreach ($files as $fileKey => $file) {
-                            $fileName = time() . "_h_{$i}_{$fileKey}." . $file->getClientOriginalExtension();
-                            $file->move(public_path('uploads/courses/docs'), $fileName);
-                            $uploadedHandouts[] = 'uploads/courses/docs/' . $fileName;
-                        }
-                        $contents[$i]['handouts'] = $uploadedHandouts;
-                    } else {
-                        // Kama hakuna file jipya, baki na zilizopo au empty array
-                        $contents[$i]['handouts'] = $contents[$i]['handouts'] ?? [];
-                    }
-
-                    // C. Video Links (Zinakuja kama array tayari)
-                    $contents[$i]['video_links'] = $section['video_links'] ?? [];
-                }
-
-                // D. Handle Banner
-                $bannerPath = null;
-                if ($request->hasFile('banner')) {
-                    $bannerFile = $request->file('banner');
-                    $bannerName = time() . '_b.' . $bannerFile->getClientOriginalExtension();
-                    $bannerFile->move(public_path('uploads/banners'), $bannerName);
-                    $bannerPath = 'uploads/banners/' . $bannerName;
-                }
-
-                // 2. Create Course
                 $course = Course::create([
                     'provider_id'       => Auth::id(),
-                    'title'             => $request->title,
-                    'category'          => $request->category,
-                    'mode'              => $request->mode ?? 'Online',
-                    'short_description' => $request->short_description,
-                    'long_description'  => $request->long_description,
-                    'learning_outcomes' => $request->learning_outcomes, // Hakikisha model ina casts to array
-                    'skills'            => $request->skills,
-                    'requirements'      => $request->requirements,
-                    'contents'          => $contents, 
-                    'banner'            => $bannerPath,
-                    'status'            => 'Draft'
+                    'title'             => $request->input('title'),
+                    'category'          => $request->input('category'),
+                    'mode'              => $this->normalizeMode($request->input('mode')),
+                    'short_description' => $request->input('short_description', $request->input('shortDescription')),
+                    'long_description'  => $request->input('long_description', $request->input('longDescription')),
+                    'learning_outcomes' => $this->normalizeList($request->input('learning_outcomes')),
+                    'skills'            => $this->normalizeList($request->input('skills')),
+                    'requirements'      => $this->normalizeList($request->input('requirements')),
+                    'contents'          => $this->buildContents($request),
+                    'banner'            => $this->storeBanner($request),
+                    'status'            => Course::normalizeStatus($request->input('status', 'Draft')),
                 ]);
 
-                // 3. Return Response (Ufunguo wa 'course' ni muhimu kwa React)
                 return response()->json([
                     'message' => 'Course saved successfully!',
-                    'course'  => $course
+                    'course'  => $course,
                 ], 201);
             });
+        } catch (\Throwable $e) {
+            Log::error('Course creation error: '.$e->getMessage());
 
-        } catch (\Exception $e) {
-            Log::error("Course Creation Error: " . $e->getMessage());
             return response()->json([
-                'error' => 'Failed to save course',
-                'details' => $e->getMessage()
+                'message' => 'Failed to save course',
+                'error'   => $e->getMessage(),
             ], 500);
         }
     }
 
     public function show($id)
     {
-        $course = Course::where('id', $id)
-            ->where('provider_id', Auth::id())
-            ->firstOrFail();
-        return response()->json($course);
+        return response()->json($this->ownedCourse($id)->load('cohorts'));
+    }
+
+    public function update(Request $request, $id)
+    {
+        $this->validateCourse($request);
+
+        try {
+            return DB::transaction(function () use ($request, $id) {
+                $course = $this->ownedCourse($id);
+
+                $course->fill([
+                    'title'             => $request->input('title', $course->title),
+                    'category'          => $request->input('category', $course->category),
+                    'mode'              => $this->normalizeMode($request->input('mode', $course->mode)),
+                    'short_description' => $request->input('short_description', $request->input('shortDescription', $course->short_description)),
+                    'long_description'  => $request->input('long_description', $request->input('longDescription', $course->long_description)),
+                    'status'            => $request->has('status')
+                        ? Course::normalizeStatus($request->input('status'))
+                        : $course->status,
+                ]);
+
+                foreach (['learning_outcomes', 'skills', 'requirements'] as $field) {
+                    if ($request->has($field)) {
+                        $course->{$field} = $this->normalizeList($request->input($field));
+                    }
+                }
+
+                if ($request->has('contents')) {
+                    $course->contents = $this->buildContents($request, $course);
+                }
+
+                if ($banner = $this->storeBanner($request)) {
+                    if ($course->banner && File::exists(public_path($course->banner))) {
+                        File::delete(public_path($course->banner));
+                    }
+                    $course->banner = $banner;
+                }
+
+                $course->save();
+
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Course updated successfully',
+                    'course'  => $course,
+                ]);
+            });
+        } catch (\Throwable $e) {
+            Log::error('Course update error: '.$e->getMessage());
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to update course',
+                'error'   => $e->getMessage(),
+            ], 500);
+        }
     }
 
     public function destroy($id)
     {
-        $course = Course::where('id', $id)
-            ->where('provider_id', Auth::id())
-            ->firstOrFail();
-        
-        // Futa faili za banner/video hapa ikiwa ni lazima
+        $course = $this->ownedCourse($id);
         $course->delete();
+
         return response()->json(['success' => true, 'message' => 'Course deleted successfully!']);
     }
 
-   public function update(Request $request, $id)
-{
-    $request->validate([
-        'title' => 'required|string|max:255',
-        'category' => 'required|string',
-        'banner' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:5120',
-    ]);
+    // ------------------------------------------------------------------
+    // Course community features
+    // ------------------------------------------------------------------
 
-    try {
-        return DB::transaction(function () use ($request, $id) {
-            $course = Course::where('id', $id)
-                ->where('provider_id', Auth::id())
-                ->firstOrFail();
+    public function addAnnouncement(Request $request, $courseId)
+    {
+        $course = $this->ownedCourse($courseId);
 
-            // --- 1. HANDLE ARRAYS (Taja column majina ya DB) ---
-            $processArray = function($fieldName) use ($request, $course) {
-                $data = $request->input($fieldName);
-                if (!$data) return $course->$fieldName; // Kama hakuna data mpya, tumia ya zamani
+        $data = $request->validate([
+            'title'   => ['required', 'string', 'max:255'],
+            'content' => ['required', 'string'],
+        ]);
 
-                if (is_string($data)) {
-                    $decoded = json_decode($data, true);
-                    return (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) 
-                        ? $decoded 
-                        : array_filter(array_map('trim', explode("\n", $data)));
-                }
-                return $data;
-            };
+        $announcement = Announcement::create([
+            'course_id' => $course->id,
+            'title'     => $data['title'],
+            'content'   => $data['content'],
+        ]);
 
-            // Hakikisha hapa unatumia majina ya column za DB (snake_case)
-            $course->learning_outcomes = $processArray('learning_outcomes');
-            $course->requirements      = $processArray('requirements');
-            $course->skills            = $processArray('skills');
+        return response()->json($announcement, 201);
+    }
 
-            // --- 2. HANDLE BANNER ---
-            if ($request->hasFile('banner')) {
-                $bannerFile = $request->file('banner');
-                $bannerName = time() . '_b.' . $bannerFile->getClientOriginalExtension();
-                $bannerFile->move(public_path('uploads/banners'), $bannerName);
-                $bannerPath = 'uploads/banners/' . $bannerName;
+    public function askQuestion(Request $request, $courseId)
+    {
+        $course = Course::findOrFail($courseId);
 
-                if ($course->banner && file_exists(public_path($course->banner))) {
-                    @unlink(public_path($course->banner));
-                }
-                $course->banner = $bannerPath;
+        $data = $request->validate([
+            'question_text' => ['required_without:question', 'string'],
+            'question'      => ['required_without:question_text', 'string'],
+        ]);
+
+        $question = Question::create([
+            'course_id'     => $course->id,
+            'user_id'       => Auth::id(),
+            'question_text' => $data['question_text'] ?? $data['question'],
+        ]);
+
+        return response()->json($question, 201);
+    }
+
+    public function answerQuestion(Request $request, $id)
+    {
+        $question = Question::with('course')->findOrFail($id);
+
+        if ((int) $question->course?->provider_id !== (int) Auth::id()) {
+            return response()->json(['message' => 'You do not own this course.'], 403);
+        }
+
+        $data = $request->validate([
+            'answer_text' => ['required_without:answer', 'string'],
+            'answer'      => ['required_without:answer_text', 'string'],
+        ]);
+
+        $question->update(['answer_text' => $data['answer_text'] ?? $data['answer']]);
+
+        return response()->json($question);
+    }
+
+    // ------------------------------------------------------------------
+    // Helpers
+    // ------------------------------------------------------------------
+
+    private function validateCourse(Request $request): void
+    {
+        $request->validate([
+            'title'    => ['required', 'string', 'max:255'],
+            'category' => ['required', 'string', 'max:255'],
+            'mode'     => ['nullable', 'in:Online,Physical,Hybrid'],
+            'banner'   => ['nullable', 'image', 'mimes:jpeg,png,jpg,gif,webp', 'max:5120'],
+        ]);
+    }
+
+    private function normalizeMode($mode): string
+    {
+        return in_array($mode, ['Online', 'Physical', 'Hybrid'], true) ? $mode : 'Online';
+    }
+
+    private function ownedCourse($id): Course
+    {
+        return Course::where('id', $id)
+            ->where('provider_id', Auth::id())
+            ->firstOrFail();
+    }
+
+    /** Accept an array, a JSON string or newline-separated text. */
+    private function normalizeList($value): array
+    {
+        if ($value === null || $value === '') {
+            return [];
+        }
+
+        if (is_string($value)) {
+            $decoded = json_decode($value, true);
+            if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+                return array_values(array_filter($decoded, 'is_scalar'));
             }
 
-            // --- 3. UPDATE FIELDS (Taja moja baada ya nyingine kuzuia Unknown Column error) ---
-            $course->title = $request->input('title');
-            $course->category = $request->input('category');
-            $course->mode = $request->input('mode', $course->mode);
-            $course->short_description = $request->input('short_description', $course->short_description);
-            $course->long_description = $request->input('long_description', $course->long_description);
-            // $course->price = $request->input('price', $course->price);
-            $course->status = $request->input('status', $course->status);
+            return array_values(array_filter(array_map('trim', preg_split('/\r\n|\r|\n/', $value)), 'strlen'));
+        }
 
-            $course->save();
+        if (is_array($value)) {
+            return array_values(array_filter($value, fn ($v) => is_scalar($v) && $v !== ''));
+        }
 
-            return response()->json([
-                'success' => true,
-                'message' => 'Course updated successfully',
-                'course'  => $course
-            ]);
-        });
-    } catch (\Exception $e) {
-        Log::error('Course Update Error: ' . $e->getMessage());
-        return response()->json([
-            'success' => false,
-            'error'   => 'Failed to update course',
-            'details' => $e->getMessage() // Hapa ndipo ilipokuambia Column not found
-        ], 500);
+        return [];
     }
-}
+
+    /** Build the JSON curriculum, persisting any uploaded videos/handouts. */
+    private function buildContents(Request $request, ?Course $course = null): array
+    {
+        $raw = $request->input('contents');
+
+        if (is_string($raw)) {
+            $decoded = json_decode($raw, true);
+            $raw = is_array($decoded) ? $decoded : [];
+        }
+
+        if (! is_array($raw)) {
+            return $course?->contents ?? [];
+        }
+
+        $previous = $course?->contents ?? [];
+        $result   = [];
+
+        foreach ($raw as $i => $section) {
+            if (! is_array($section)) {
+                continue;
+            }
+
+            $video = $section['video'] ?? ($previous[$i]['video'] ?? null);
+            if (! is_string($video)) {
+                $video = null;
+            }
+
+            $handouts = array_values(array_filter(
+                (array) ($section['handouts'] ?? ($previous[$i]['handouts'] ?? [])),
+                'is_string'
+            ));
+
+            if ($request->hasFile("contents.$i.video")) {
+                $video = $this->storeUpload($request->file("contents.$i.video"), 'courses/videos');
+            }
+
+            if ($request->hasFile("contents.$i.handouts")) {
+                $handouts = [];
+                foreach ((array) $request->file("contents.$i.handouts") as $file) {
+                    if ($file instanceof UploadedFile) {
+                        $handouts[] = $this->storeUpload($file, 'courses/docs');
+                    }
+                }
+            }
+
+            $result[] = [
+                'title'       => (string) ($section['title'] ?? ''),
+                'description' => (string) ($section['description'] ?? ''),
+                'notes_text'  => (string) ($section['notes_text'] ?? ''),
+                'video'       => $video,
+                'video_links' => array_values(array_filter((array) ($section['video_links'] ?? []), 'is_string')),
+                'handouts'    => $handouts,
+            ];
+        }
+
+        return $result;
+    }
+
+    private function storeBanner(Request $request): ?string
+    {
+        if (! $request->hasFile('banner')) {
+            return null;
+        }
+
+        return $this->storeUpload($request->file('banner'), 'banners');
+    }
+
+    private function storeUpload(UploadedFile $file, string $directory): string
+    {
+        $target = public_path('uploads/'.$directory);
+        File::ensureDirectoryExists($target);
+
+        $extension = $file->getClientOriginalExtension() ?: $file->guessExtension() ?: 'bin';
+        $name = Str::random(24).'.'.$extension;
+        $file->move($target, $name);
+
+        return 'uploads/'.$directory.'/'.$name;
+    }
 }

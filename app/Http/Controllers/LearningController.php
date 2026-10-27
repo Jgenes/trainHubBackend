@@ -1,144 +1,139 @@
 <?php
-namespace App\Http\Controllers; // Hakikisha hapa huna \Api
-use App\Http\Controllers\Controller;
+
+namespace App\Http\Controllers;
+
+use App\Models\Course;
+use App\Models\LessonCompletion;
+use App\Models\Payment;
 use Illuminate\Http\Request;
-use App\Models\Enrollment;
 use Illuminate\Support\Facades\Auth;
-use App\Models\Payment; // Au Enrollment kama unatumia table hiyo
+
 class LearningController extends Controller
 {
+    /** Courses the signed-in learner has paid for. */
     public function myCourses()
     {
-        try {
-            $user = auth()->user();
+        $payments = Payment::where('user_id', Auth::id())
+            ->whereIn('status', ['COMPLETED', 'PAID', 'SUCCESS'])
+            ->with(['course', 'cohort'])
+            ->latest()
+            ->get();
 
-            // Tunatafuta kozi ambazo huyu user amelipia (Status PAID/COMPLETED)
-            // Tunatumia 'with' ili kuchukua data za kozi husika toka table ya courses
-            $enrollments = Payment::where('user_id', $user->id)
-                ->whereIn('status', ['PAID', 'COMPLETED'])
-                ->with('course') // Hii inachukua data za course husika
-                ->get();
-
-            // Tunarudisha data kwa format ambayo React yako inatarajia
-            return response()->json($enrollments);
-            
-        } catch (\Exception $e) {
-            return response()->json(['error' => $e->getMessage()], 500);
-        }
+        return response()->json($payments);
     }
 
-  public function learningContent($id)
-{
-    try {
-        $userId = auth('sanctum')->id();
+    /** Curriculum for a paid course, including per-lesson progress. */
+    public function learningContent($id)
+    {
+        $userId = Auth::id();
 
-        // 1. Check kama amelipia
-        $isPaid = \App\Models\Payment::where('user_id', $userId)
+        $paid = Payment::where('user_id', $userId)
             ->where('course_id', $id)
-            ->whereIn('status', ['COMPLETED', 'PAID'])
+            ->whereIn('status', ['COMPLETED', 'PAID', 'SUCCESS'])
             ->exists();
 
-        if (!$isPaid) {
+        if (! $paid) {
             return response()->json(['message' => 'Access denied. Please pay first.'], 403);
         }
 
-        // 2. Tafuta kozi
-        $course = \App\Models\Course::findOrFail($id);
+        $course = Course::findOrFail($id);
 
-        // 3. Chakata 'contents' (Ambayo ni JSON array kutokana na $casts kwenye Model)
-        // Kila 'item' hapa ina: title, description, video, handouts[], video_links[], notes_text
-        $modules = collect($course->contents)->map(function ($item, $index) {
+        $completed = LessonCompletion::where('user_id', $userId)
+            ->where('course_id', $course->id)
+            ->pluck('lesson_id')
+            ->map(fn ($v) => (string) $v)
+            ->all();
+
+        $modules = collect($course->contents ?? [])->map(function ($item, $index) use ($completed) {
+            $id = (string) ($item['id'] ?? ($index + 1));
+            $video = $item['video'] ?? null;
+
             return [
-                'id'          => $index + 1,
+                'id'          => $id,
                 'title'       => $item['title'] ?? 'Untitled Lesson',
                 'description' => $item['description'] ?? '',
                 'notes'       => $item['notes_text'] ?? '',
-                // Hapa tunatengeneza full URL ya video
-                'video_url'   => !empty($item['video']) ? (
-                    str_starts_with($item['video'], 'uploads/') ? asset($item['video']) : asset('storage/' . ltrim($item['video'], '/'))
-                ) : null,
+                'video_url'   => $video ? $this->assetUrl($video) : null,
                 'links'       => $item['video_links'] ?? [],
-                'handouts'    => isset($item['handouts']) ? collect($item['handouts'])->map(function($h) {
-                    return str_starts_with($h, 'uploads/') ? asset($h) : asset('storage/' . ltrim($h, '/'));
-                }) : []
+                'handouts'    => collect($item['handouts'] ?? [])
+                    ->filter(fn ($h) => is_string($h))
+                    ->map(fn ($h) => $this->assetUrl($h))
+                    ->values()
+                    ->all(),
+                'completed'   => in_array($id, $completed, true),
             ];
-        });
+        })->values();
+
+        $total = $modules->count();
+        $done  = $modules->where('completed', true)->count();
 
         return response()->json([
-            'id'                => $course->id,
-            'title'             => $course->title,
-            'short_description' => $course->short_description,
-            'modules'           => $modules
+            'id'                  => $course->id,
+            'title'               => $course->title,
+            'short_description'   => $course->short_description,
+            'modules'             => $modules,
+            'progress_percentage' => $total > 0 ? (int) round($done / $total * 100) : 0,
+        ]);
+    }
+
+    /** POST /api/lessons/{id}/complete */
+    public function completeLesson(Request $request, $id)
+    {
+        $courseId = $request->input('course_id');
+
+        if (! $courseId) {
+            $courseId = Payment::where('user_id', Auth::id())
+                ->whereIn('status', ['COMPLETED', 'PAID', 'SUCCESS'])
+                ->latest()
+                ->value('course_id');
+        }
+
+        return $this->markComplete($courseId, $request->input('lesson_id', $id));
+    }
+
+    /** POST /api/courses/{courseId}/complete-lesson */
+    public function completeCourseLesson(Request $request, $courseId)
+    {
+        return $this->markComplete($courseId, $request->input('lesson_id', $request->input('lesson')));
+    }
+
+    private function markComplete($courseId, $lessonId)
+    {
+        if (! $courseId || $lessonId === null || $lessonId === '') {
+            return response()->json(['message' => 'course_id and lesson_id are required.'], 422);
+        }
+
+        $paid = Payment::where('user_id', Auth::id())
+            ->where('course_id', $courseId)
+            ->whereIn('status', ['COMPLETED', 'PAID', 'SUCCESS'])
+            ->exists();
+
+        if (! $paid) {
+            return response()->json(['message' => 'Access denied. Please pay first.'], 403);
+        }
+
+        LessonCompletion::firstOrCreate([
+            'user_id'   => Auth::id(),
+            'course_id' => $courseId,
+            'lesson_id' => (string) $lessonId,
         ]);
 
-    } catch (\Exception $e) {
+        $course  = Course::findOrFail($courseId);
+        $total   = count($course->contents ?? []);
+        $done    = LessonCompletion::where('user_id', Auth::id())
+            ->where('course_id', $courseId)
+            ->count();
+
         return response()->json([
-            'error'   => 'Server Error',
-            'message' => $e->getMessage()
-        ], 500);
+            'success'             => true,
+            'progress_percentage' => $total > 0 ? (int) round(min($done, $total) / $total * 100) : 100,
+        ]);
     }
-}
 
-
-    // public function myEnrollments()
-    // {
-    //     $user = Auth::user();
-
-    //     $enrollments = Enrollment::where('user_id', $user->id)
-    //         ->with([
-    //             'course:id,title',
-    //             'cohort:id,name'
-    //         ])
-    //         ->get()
-    //         ->map(function ($e) use ($user) {
-    //             return [
-    //                 'id' => $e->id,
-    //                 'student' => $user->name,
-    //                 'course' => $e->course?->title ?? 'N/A',
-    //                 'cohort' => $e->cohort?->name ?? 'N/A',
-    //                 'date' => $e->created_at->format('Y-m-d'),
-    //                 'status' => ucfirst(strtolower($e->status)),
-    //             ];
-    //         });
-
-    //     return response()->json([
-    //         'success' => true,
-    //         'data' => $enrollments
-    //     ]);
-    // }
-    
-
-//    public function providerEnrollments()
-// {
-//     $user = Auth::user();
-
-//     try {
-//         $enrollments = Enrollment::with([
-//                 'student:id,name', // Iwe student, siyo user
-//                 'cohort:id,name',
-//                 'course:id,title,provider_id'
-//             ])
-//             ->whereHas('course', function ($q) use ($user) {
-//                 // Hakikisha hapa unalinganisha provider_id wa kozi na ID ya aliyelogin
-//                 $q->where('provider_id', $user->id);
-//             })
-//             ->latest()
-//             ->get()
-//             ->map(function ($e) {
-//                 return [
-//                     'id' => $e->id,
-//                     'student' => $e->student?->name ?? 'N/A', // Iwe student
-//                     'course' => $e->course?->title ?? 'N/A',
-//                     'cohort' => $e->cohort?->name ?? 'N/A',
-//                     'date' => $e->created_at->format('Y-m-d'),
-//                     'status' => ucfirst(strtolower($e->status)),
-//                 ];
-//             });
-
-//         return response()->json($enrollments); // Rudi kwenye array rahisi ili React isichanganyikiwe
-//     } catch (\Exception $e) {
-//         return response()->json(['error' => $e->getMessage()], 500);
-//     }
-// }
-
+    private function assetUrl(string $path): string
+    {
+        return str_starts_with($path, 'uploads/')
+            ? asset($path)
+            : asset('storage/'.ltrim($path, '/'));
+    }
 }

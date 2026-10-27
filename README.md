@@ -1,59 +1,134 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# TrainHub TZ — Backend API
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+Laravel 12 REST API for the TrainHub TZ training marketplace. It powers the
+React/Vite frontend (learner catalogue, provider workspace, admin console,
+PesaPal payments, reports and PDF/Excel exports).
 
-## About Laravel
+---
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+## 1. Requirements
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+| Tool | Version |
+| --- | --- |
+| PHP | **8.2 or 8.3** (8.4 also works; 8.5 is *not* supported by the locked `phpoffice/phpspreadsheet 1.30`) |
+| Extensions | `pdo_mysql` / `pdo_sqlite`, `mbstring`, `zip`, `gd`, `bcmath`, `dom`, `curl`, `fileinfo` |
+| Composer | 2.x |
+| Database | MySQL 8 (production) or SQLite (local / tests) |
+| Node | 18+ — only needed if you rebuild the Vite assets (`npm install && npm run build`) |
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+## 2. Local setup
 
-## Learning Laravel
+```bash
+git clone <this-repo> && cd trainHubBackend
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework. You can also check out [Laravel Learn](https://laravel.com/learn), where you will be guided through building a modern Laravel application.
+composer install
+cp .env.example .env
+php artisan key:generate
 
-If you don't feel like reading, [Laracasts](https://laracasts.com) can help. Laracasts contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+# SQLite needs no server:
+touch database/database.sqlite
+php artisan migrate
 
-## Laravel Sponsors
+php artisan serve            # http://127.0.0.1:8000
+curl http://127.0.0.1:8000/up   # -> 200 OK
+```
 
-We would like to extend our thanks to the following sponsors for funding Laravel development. If you are interested in becoming a sponsor, please visit the [Laravel Partners program](https://partners.laravel.com).
+For MySQL, set `DB_CONNECTION=mysql` plus `DB_HOST`, `DB_PORT`, `DB_DATABASE`,
+`DB_USERNAME`, `DB_PASSWORD` in `.env` and run `php artisan migrate`.
 
-### Premium Partners
+`.env` is **git-ignored and no longer committed**. Copy `.env.example` and fill
+in your own values. If you previously deployed using the committed `.env`,
+create the same keys as environment variables in your hosting dashboard.
 
-- **[Vehikl](https://vehikl.com)**
-- **[Tighten Co.](https://tighten.co)**
-- **[Kirschbaum Development Group](https://kirschbaumdevelopment.com)**
-- **[64 Robots](https://64robots.com)**
-- **[Curotec](https://www.curotec.com/services/technologies/laravel)**
-- **[DevSquad](https://devsquad.com/hire-laravel-developers)**
-- **[Redberry](https://redberry.international/laravel-development)**
-- **[Active Logic](https://activelogic.com)**
+> **Security:** an earlier commit contained a `.env` with live mail, PesaPal and
+> AWS credentials. Those secrets are still in git history. Rotate all of them.
 
-## Contributing
+## 3. Tests
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+```bash
+php artisan test
+# or: php vendor/bin/phpunit
+```
 
-## Code of Conduct
+`phpunit.xml` sets an in-memory SQLite database, array cache/mail, sync queue and
+a fixed test `APP_KEY`, so the suite needs no external services. The feature
+suite covers registration/activation/OTP login, password reset, admin
+authorization, provider onboarding, course + cohort CRUD, course extras,
+learning progress, reviews, reports, exports, PDF downloads and the PesaPal
+initiate/callback flow (HTTP faked).
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+## 4. Environment variables
 
-## Security Vulnerabilities
+| Key | Purpose | Default |
+| --- | --- | --- |
+| `APP_KEY` | Encryption key — **required** | — |
+| `APP_URL` | Public API base URL (used in generated links) | `http://localhost:8000` |
+| `FRONTEND_URL` | React app URL; activation, reset and payment redirects use it | `http://localhost:5173` |
+| `CORS_ALLOWED_ORIGINS` | Comma-separated origins allowed with credentials | `localhost:5173,127.0.0.1:5173,localhost:3000` |
+| `SANCTUM_STATEFUL_DOMAINS` | First-party SPA domains | `localhost:5173,...` |
+| `DB_*` | Database connection | SQLite |
+| `QUEUE_CONNECTION` | `sync` (no worker needed) or `database` + `php artisan queue:work` | `sync` in the example |
+| `CACHE_STORE` / `SESSION_DRIVER` | `file` / `database` / `redis` | `file` |
+| `MAIL_*` | SMTP used for activation, OTP and reset emails | `log` in the example |
+| `PESAPAL_CONSUMER_KEY`, `PESAPAL_CONSUMER_SECRET` | PesaPal v3 credentials | — |
+| `PESAPAL_URL`, `PESAPAL_MODE` | Gateway URL and `sandbox`/`live` | `https://pay.pesapal.com/v3`, `sandbox` |
+| `PAYMENT_CALLBACK_TOKEN` | Optional shared secret for `POST /api/payment-callback` (send `X-Callback-Token`) | — |
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+All emails are sent synchronously, so registration and login work without a
+queue worker. Mail failures are logged and never leave a half-created account.
 
-## License
+## 5. Authentication
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+* `POST /api/register`, `POST /api/tenant-register` → activation email.
+* `GET /api/auth/activate-account?token=…` → activates and redirects to the SPA.
+* `POST /api/login` → emails a 6-digit OTP; `POST /api/verify-otp` returns a
+  Sanctum bearer token plus the role-based `redirect` path.
+* Send `Authorization: Bearer <token>` on every protected route.
+* `POST /api/forgot-password` / `POST /api/reset-password` implement a
+  token-based reset that links back to the SPA.
+* `/api/admin/*` and `POST /api/courses/{id}/status` require `role = admin`.
+
+## 6. Main endpoint groups
+
+| Group | Examples |
+| --- | --- |
+| Public catalogue | `GET /api/training`, `/api/training/{id}`, `/api/public-courses`, `/api/public-reviews`, `/api/top-providers` |
+| Auth | `/api/register`, `/api/login`, `/api/verify-otp`, `/api/resend-otp`, `/api/forgot-password`, `/api/reset-password` |
+| Learner | `/api/my-learning`, `/api/my-enrollments`, `/api/my-payments`, `/api/courses/{id}/learning`, `/api/courses/{id}/complete-lesson`, `/api/reviews` |
+| Payments | `/api/payment/send-otp`, `/api/payment/verify-otp`, `/api/payment/initiate`, `/api/pesapal/callback`, `/api/download-document/{reference}`, `/api/qr-code/{data}` |
+| Provider | `/api/provider/onboarding`, `/api/provider/profile`, `/api/provider/payments`, `/api/provider/all-cohorts`, `/api/provider/cohort-students/{id}`, `/api/provider/reports/*`, `/api/provider/reviews` |
+| Courses & cohorts | `/api/courses` (apiResource), `POST /api/courses/{id}` (multipart), `/api/courses/{id}/cohorts*`, `/api/courses/{id}/notes`, `/announcements`, `/tools`, `/submit-all` |
+| Admin | `/api/admin/stats`, `/api/admin/financials`, `/api/admin/all-payments`, `/api/admin/reports/summary`, `/api/admin/providers/*`, `/api/admin/courses/*` |
+
+Run `php artisan route:list` for the full list.
+
+## 7. Deployment
+
+A production `Dockerfile` (PHP 8.3 + Apache) is included. `render.yaml` uses
+`runtime: docker`, because Render has no native PHP runtime.
+
+```bash
+docker build -t trainhub-api .
+docker run -p 8000:10000 --env-file .env trainhub-api
+```
+
+Set the environment variables from the table above in the hosting dashboard.
+The container entrypoint caches config/routes/views at start-up and runs
+`php artisan migrate --force` (set `RUN_MIGRATIONS=false` to skip). Point the
+health check at `/up`.
+
+If you use a classic PaaS instead (`Procfile`), the start command is
+`php artisan serve --host 0.0.0.0 --port $PORT`; run
+`php artisan config:cache && php artisan route:cache && php artisan migrate --force`
+as a release step.
+
+## 8. Notes on the data model
+
+* Course status is stored as `Draft` / `Published` / `Closed`; admin endpoints
+  accept `PUBLISHED` / `DRAFT` and normalise them, so approved courses appear
+  in the public catalogue immediately.
+* A successful payment automatically creates an `enrollment` (payment observer).
+* `2026_10_27_000001_repair_schema` adds columns that the original stub
+  migrations never created (invoices, receipts, disputes, payment extras,
+  lesson completions, password reset tokens). It is guarded by
+  `Schema::hasColumn` / `hasTable`, so it is safe on new and existing databases.

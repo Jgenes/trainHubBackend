@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Middleware\AdminMiddleware;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -11,21 +12,20 @@ return Application::configure(basePath: dirname(__DIR__))
         commands: __DIR__.'/../routes/console.php',
         health: '/up',
     )
-    
     ->withMiddleware(function (Middleware $middleware): void {
-        // This enables Sanctum to handle cookies/sessions for your frontend
-        $middleware->statefulApi();
-        $middleware->validateCsrfTokens(except: [
-            'api/tenant-register', 
-                        'api/login', 
-                        'api/verify-otp',
-                        'api/provider/onboarding',
-                        'api/courses',
-                        'api/*', // Hii inazuia kero ya CSRF kwenye API zote
-
-            // 'api/other-route',
+        $middleware->alias([
+            'admin' => AdminMiddleware::class,
         ]);
+
+        // Sanctum SPA support (session cookies / CSRF for first-party fronts).
+        $middleware->statefulApi();
+
+        // API clients authenticate with Bearer tokens, so CSRF is not needed.
+        $middleware->validateCsrfTokens(except: ['api/*']);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
-        //
+        // Always answer API requests with JSON, including 404/405/500.
+        $exceptions->shouldRenderJsonWhen(
+            fn ($request, $e) => $request->is('api/*') || $request->expectsJson()
+        );
     })->create();
