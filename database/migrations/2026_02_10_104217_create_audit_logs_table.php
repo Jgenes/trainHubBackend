@@ -16,7 +16,7 @@ return new class extends Migration
     $table->foreignId('admin_id')->constrained('users');
     $table->string('action'); // e.g., SUSPEND_PROVIDER
     $table->string('target_type'); // e.g., Provider, Course, Payment
-    $table->unsignedBigInteger('target_id');
+    $table->string('target_id')->nullable();
     $table->text('reason')->nullable();
     $table->json('old_values')->nullable(); // Thamani kabla ya kubadilishwa
     $table->json('new_values')->nullable(); // Thamani baada ya kubadilishwa

@@ -11,24 +11,27 @@ class Provider extends Model
 
     public $incrementing = false;
     protected $keyType = 'string';
+
     protected $fillable = [
-        'id','legal_name','brand_name','provider_type','registration_ref','tin','website',
-        'country','region','district','physical_address','google_maps_link',
-        'contact_name','contact_role','contact_phone','contact_email',
-        'status','provider_slug','created_by'
+        'id', 'legal_name', 'brand_name', 'provider_type', 'registration_ref',
+        'tin', 'website', 'country', 'region', 'district', 'physical_address',
+        'google_maps_link', 'contact_name', 'contact_role', 'contact_phone',
+        'contact_email', 'status', 'provider_slug', 'created_by', 'user_id',
+        'brela_doc', 'tin_doc',
     ];
 
     public function admin()
     {
-        return $this->belongsTo(User::class,'created_by');
+        return $this->belongsTo(User::class, 'created_by');
     }
-    public function provider()
-{
-    return $this->hasOne(Provider::class, 'user_id');
-}
- public function user()
+
+    public function user()
     {
-        return $this->belongsTo(User::class, 'created_by'); 
-        // au 'user_id' kama provider table ina user_id
+        return $this->belongsTo(User::class, 'user_id');
+    }
+
+    public function courses()
+    {
+        return $this->hasMany(Course::class, 'provider_id', 'user_id');
     }
 }

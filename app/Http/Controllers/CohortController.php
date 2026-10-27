@@ -147,4 +147,40 @@ class CohortController extends Controller
 
         return response()->json(['message' => 'Cohort deleted'], 200);
     }
+    /** Recompute OPEN / FULL / CLOSED for every cohort of a course. */
+    public function refreshStatuses($courseId)
+    {
+        $course = Course::where('id', $courseId)
+            ->where('provider_id', Auth::id())
+            ->firstOrFail();
+
+        $statuses = [];
+        foreach ($course->cohorts as $cohort) {
+            $statuses[$cohort->id] = $cohort->refreshStatus();
+        }
+
+        return response()->json([
+            'status'   => 'success',
+            'message'  => 'Cohort statuses refreshed.',
+            'statuses' => $statuses,
+        ]);
+    }
+
+    /** Quick status-only update used by the cohort table. */
+    public function updateStatus(Request $request, $courseId, $cohortId)
+    {
+        $data = $request->validate([
+            'status' => ['required', 'in:OPEN,FULL,CLOSED'],
+        ]);
+
+        $cohort = Cohort::where('id', $cohortId)
+            ->where('course_id', $courseId)
+            ->where('provider_id', Auth::id())
+            ->firstOrFail();
+
+        $cohort->update(['status' => $data['status']]);
+
+        return response()->json(['status' => 'success', 'cohort' => $cohort]);
+    }
+
 }

@@ -6,6 +6,7 @@ use App\Models\Provider;
 use App\Models\User;
 use App\Mail\ProviderApproved;
 use App\Mail\ProviderSuspended;
+use App\Mail\ProviderRejected;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Log;
@@ -113,9 +114,8 @@ public function rejectStatus(Request $request, $id)
             // Zuia ashindwe kulogin kabisa
             $provider->user->update(['is_verified' => false]);
 
-            // Unaweza kutumia Mail class ya Suspended au ukatengeneza mpya 'ProviderRejected'
             try {
-                Mail::to($provider->user->email)->send(new ProviderSuspended($provider, $request->reason));
+                Mail::to($provider->user->email)->send(new ProviderRejected($provider, $request->reason));
             } catch (\Exception $mailEx) {
                 Log::error("ProviderRejected Mail Error: " . $mailEx->getMessage());
             }

@@ -12,36 +12,63 @@ class User extends Authenticatable
     use HasApiTokens, HasFactory, Notifiable;
 
     protected $fillable = [
-        'name','email','password','phone','role','is_verified',
-        'activation_token','activation_expires_at','login_otp','login_otp_expires_at',
-        'provider_id'
+        'name', 'email', 'password', 'phone', 'role', 'is_verified',
+        'activation_token', 'activation_expires_at', 'login_otp',
+        'login_otp_expires_at', 'provider_id', 'email_verified_at',
     ];
 
-    protected $hidden = ['password','remember_token','login_otp'];
+    protected $hidden = [
+        'password', 'remember_token', 'login_otp', 'activation_token',
+    ];
 
-    protected $casts = ['email_verified_at'=>'datetime','password'=>'hashed'];
+    protected function casts(): array
+    {
+        return [
+            'email_verified_at'      => 'datetime',
+            'activation_expires_at'  => 'datetime',
+            'login_otp_expires_at'   => 'datetime',
+            'password'               => 'hashed',
+            'is_verified'            => 'boolean',
+        ];
+    }
 
+    /** Normalise Tanzanian phone numbers to +255XXXXXXXXX before saving. */
+    public static function normalizePhone(?string $phone): ?string
+    {
+        if ($phone === null || trim($phone) === '') {
+            return null;
+        }
+
+        $digits = preg_replace('/[^0-9]/', '', $phone);
+
+        if (str_starts_with($digits, '0')) {
+            $digits = '255' . substr($digits, 1);
+        } elseif (!str_starts_with($digits, '255')) {
+            $digits = '255' . $digits;
+        }
+
+        return '+' . $digits;
+    }
+
+    public function setPhoneAttribute($phone): void
+    {
+        $this->attributes['phone'] = static::normalizePhone($phone);
+    }
+
+    /** The provider record linked through users.provider_id. */
     public function provider()
     {
         return $this->hasOne(Provider::class, 'id', 'provider_id');
     }
 
-    public function setPhoneAttribute($phone)
+    /** The provider application this user submitted. */
+    public function providerProfile()
     {
-        $phone = preg_replace('/[^0-9]/', '', $phone);
-        if (substr($phone,0,1) == '0') $phone = '255'.substr($phone,1);
-        $this->attributes['phone'] = '+' . $phone;
-    }
-    public function user()
-{
-    return $this->belongsTo(User::class, 'user_id');
-}
-public function completedLessons()
-{
-    return $this->belongsToMany(Lesson::class, 'lesson_user');
-}
-public function providerProfile() {
-        return $this->hasOne(Provider::class, 'user_id');
+        return $this->hasOne(Provider::class, 'created_by');
     }
 
+    public function isAdmin(): bool
+    {
+        return $this->role === 'admin';
+    }
 }

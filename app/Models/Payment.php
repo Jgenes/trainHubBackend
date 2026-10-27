@@ -6,24 +6,56 @@ use Illuminate\Database\Eloquent\Model;
 
 class Payment extends Model
 {
-    protected $fillable = [
-        'reference', 'user_id', 'course_id', 'cohort_id', 'first_name', 
-        'email', 'phone_number', 'amount', 'currency', 'status', 
-        'organization', 'position', 'street', 'region', 'city', 'postal', 'tracking_id'
-    ];
-   public function course()
-{
-    return $this->belongsTo(Course::class, 'course_id');
-}
+    protected $table = 'payments';
 
-public function cohort()
-{
-    return $this->belongsTo(Cohort::class, 'cohort_id');
-}
-public function user()
-{
-    // Hii inaiambia Laravel kuwa payment moja inamilikiwa na user mmoja
-    // Hakikisha 'user_id' ndiyo column iliyopo kwenye table yako ya payments
-    return $this->belongsTo(User::class, 'user_id');
-}
+    protected $fillable = [
+        'reference', 'user_id', 'course_id', 'cohort_id',
+        'first_name', 'last_name', 'email', 'phone_number',
+        'amount', 'currency', 'description', 'status', 'tracking_id',
+        'organization', 'position', 'street', 'region', 'city', 'postal',
+        'user_name', 'expires_at', 'payment_method',
+    ];
+
+    protected function casts(): array
+    {
+        return [
+            'amount'     => 'decimal:2',
+            'expires_at' => 'datetime',
+        ];
+    }
+
+    public function course()
+    {
+        return $this->belongsTo(Course::class, 'course_id');
+    }
+
+    public function cohort()
+    {
+        return $this->belongsTo(Cohort::class, 'cohort_id');
+    }
+
+    public function user()
+    {
+        return $this->belongsTo(User::class, 'user_id');
+    }
+
+    public function invoice()
+    {
+        return $this->hasOne(Invoice::class, 'payment_id');
+    }
+
+    public function receipt()
+    {
+        return $this->hasOne(Receipt::class, 'payment_id');
+    }
+
+    public function disputes()
+    {
+        return $this->hasMany(Dispute::class, 'payment_id');
+    }
+
+    public function isPaid(): bool
+    {
+        return in_array(strtoupper((string) $this->status), ['COMPLETED', 'PAID', 'SUCCESS'], true);
+    }
 }

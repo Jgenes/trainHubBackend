@@ -15,14 +15,16 @@ class PaymentReceiptMail extends Mailable
 
     public $payment;
     public $pdf;
+    public string $mailType;
 
     /**
      * Tunapokea data za malipo na PDF kutoka kwenye Controller
      */
-    public function __construct($payment, $pdf)
+    public function __construct($payment, $pdf, string $mailType = 'receipt')
     {
         $this->payment = $payment;
         $this->pdf = $pdf;
+        $this->mailType = $mailType;
     }
 
     /**
@@ -31,7 +33,7 @@ class PaymentReceiptMail extends Mailable
     public function envelope(): Envelope
     {
         return new Envelope(
-            subject: 'Risiti ya Malipo - ' . $this->payment->reference,
+            subject: ucfirst($this->mailType) . ' - ' . $this->payment->reference,
         );
     }
 
@@ -51,7 +53,7 @@ class PaymentReceiptMail extends Mailable
     public function attachments(): array
     {
         return [
-            Attachment::fromData(fn () => $this->pdf->output(), 'Receipt-' . $this->payment->reference . '.pdf')
+            Attachment::fromData(fn () => $this->pdf->output(), ucfirst($this->mailType) . '-' . $this->payment->reference . '.pdf')
                 ->withMime('application/pdf'),
         ];
     }

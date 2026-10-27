@@ -7,53 +7,92 @@ use Illuminate\Support\Facades\Log;
 
 class PesaPalService
 {
-    protected $baseUrl;
-    protected $key;
-    protected $secret;
+    protected ?string $baseUrl;
+    protected ?string $key;
+    protected ?string $secret;
 
     public function __construct()
     {
-        $this->key = config('services.pesapal.key');
-        $this->secret = config('services.pesapal.secret');
-        $this->baseUrl = config('services.pesapal.url');
+        $this->key     = config('services.pesapal.key');
+        $this->secret  = config('services.pesapal.secret');
+        $this->baseUrl = rtrim((string) config('services.pesapal.url'), '/');
     }
 
-    public function getAccessToken()
+    public function getAccessToken(): ?string
     {
-        $response = Http::post($this->baseUrl . '/api/Auth/RequestToken', [
-            'consumer_key'    => $this->key,
-            'consumer_secret' => $this->secret,
-        ]);
+        try {
+            $response = Http::asJson()->timeout(20)->post($this->baseUrl.'/api/Auth/RequestToken', [
+                'consumer_key'    => $this->key,
+                'consumer_secret' => $this->secret,
+            ]);
 
-        if ($response->failed()) {
-            Log::error('Pesapal Token Error', ['body' => $response->body()]);
+            if ($response->failed()) {
+                Log::error('PesaPal token error', ['status' => $response->status(), 'body' => $response->body()]);
+                return null;
+            }
+
+            return $response->json('token');
+        } catch (\Throwable $e) {
+            Log::error('PesaPal token exception: '.$e->getMessage());
+            return null;
+        }
+    }
+
+    public function getIpnId(?string $token): ?string
+    {
+        if (! $token) {
             return null;
         }
 
-        return $response->json('token');
+        try {
+            $response = Http::withToken($token)->asJson()->timeout(20)
+                ->post($this->baseUrl.'/api/URLSetup/RegisterIPN', [
+                    'url'                   => route('pesapal.callback'),
+                    'ipn_notification_type' => 'POST',
+                ]);
+
+            if ($response->failed()) {
+                Log::error('PesaPal IPN registration failed', ['body' => $response->body()]);
+                return null;
+            }
+
+            return $response->json('ipn_id');
+        } catch (\Throwable $e) {
+            Log::error('PesaPal IPN exception: '.$e->getMessage());
+            return null;
+        }
     }
 
-    public function getIpnId($token)
+    public function submitOrder(array $orderData, string $token): array
     {
-        $response = Http::withToken($token)->post($this->baseUrl . '/api/URLSetup/RegisterIPN', [
-            'url' => route('pesapal.callback'),
-            'ipn_notification_type' => 'POST',
-        ]);
+        try {
+            $response = Http::withToken($token)->asJson()->timeout(20)
+                ->post($this->baseUrl.'/api/Transactions/SubmitOrderRequest', $orderData);
 
-        return $response->json('ipn_id');
+            if ($response->failed()) {
+                Log::error('PesaPal submit order failed', ['status' => $response->status(), 'body' => $response->body()]);
+                return [];
+            }
+
+            return $response->json() ?? [];
+        } catch (\Throwable $e) {
+            Log::error('PesaPal submit order exception: '.$e->getMessage());
+            return [];
+        }
     }
 
-    public function submitOrder($orderData, $token)
+    public function getTransactionStatus(string $trackingId, string $token): array
     {
-        $response = Http::withToken($token)->post($this->baseUrl . '/api/Transactions/SubmitOrderRequest', $orderData);
-        return $response->json();
-    }
+        try {
+            $response = Http::withToken($token)->timeout(20)
+                ->get($this->baseUrl.'/api/Transactions/GetTransactionStatus', [
+                    'orderTrackingId' => $trackingId,
+                ]);
 
-    public function getTransactionStatus($trackingId, $token)
-    {
-        $response = Http::withToken($token)->get($this->baseUrl . '/api/Transactions/GetTransactionStatus', [
-            'orderTrackingId' => $trackingId,
-        ]);
-        return $response->json();
+            return $response->successful() ? ($response->json() ?? []) : [];
+        } catch (\Throwable $e) {
+            Log::error('PesaPal status exception: '.$e->getMessage());
+            return [];
+        }
     }
 }

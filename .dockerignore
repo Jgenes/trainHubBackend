@@ -1,0 +1,17 @@
+.git
+.github
+.env
+.env.*
+!.env.example
+vendor
+node_modules
+database/*.sqlite*
+storage/logs/*
+storage/framework/cache/*
+storage/framework/views/*
+bootstrap/cache/*.php
+public/uploads/*
+tests
+docs
+ngrok.exe
+dk

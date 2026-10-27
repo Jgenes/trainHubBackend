@@ -2,220 +2,266 @@
 
 namespace App\Http\Controllers;
 
-use Illuminate\Http\Request;
-use App\Services\PesaPalService;
-use App\Models\Payment;
-use App\Models\Enrollment;
-use App\Models\Invoice; // Imeongezwa
-use App\Models\Receipt; // Imeongezwa
-use App\Models\Dispute; // Imeongezwa
-use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Mail;
 use App\Mail\LoginOtpMail;
+use App\Models\Dispute;
+use App\Models\Invoice;
+use App\Models\Payment;
+use App\Models\Receipt;
+use App\Services\PesaPalService;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Str;
 
 class PaymentController extends Controller
 {
-    protected $pesapal;
-
-    public function __construct(PesaPalService $pesapal)
+    public function __construct(protected PesaPalService $pesapal)
     {
-        $this->pesapal = $pesapal;
     }
 
-    public function sendOtp(Request $request) {
-        $user = auth()->user();
-        $otp = rand(100000, 999999);
-        Cache::put('payment_otp_' . $user->id, $otp, now()->addMinutes(5));
+    // ------------------------------------------------------------------
+    // Payment OTP step
+    // ------------------------------------------------------------------
+
+    public function sendOtp()
+    {
+        $user = Auth::user();
+        $otp  = random_int(100000, 999999);
+
+        Cache::put('payment_otp_'.$user->id, (string) $otp, now()->addMinutes(5));
 
         try {
-            Mail::to($user->email)->queue(new LoginOtpMail($otp, 'Your Payment OTP', 'payment'));
-        } catch (\Exception $e) {
-            Log::error('Failed to send payment OTP email: ' . $e->getMessage());
+            Mail::to($user->email)->send(new LoginOtpMail($otp, 'Your Payment OTP', 'payment'));
+        } catch (\Throwable $e) {
+            Log::error('Payment OTP email failed: '.$e->getMessage());
+
+            return response()->json(['success' => false, 'message' => 'Could not send the verification code.'], 500);
         }
 
-        Log::info("OTP for User {$user->id}: {$otp}");
+        if (! app()->isProduction()) {
+            Log::info("Payment OTP for user {$user->id}: {$otp}");
+        }
+
         return response()->json(['success' => true, 'message' => 'OTP sent to your email']);
     }
 
-    public function resendOtp(Request $request)
+    public function verifyOtp(Request $request)
     {
-        $user = auth()->user();
-        $otp = rand(100000, 999999);
-        Cache::put('payment_otp_' . $user->id, $otp, now()->addMinutes(5));
+        $request->validate(['otp' => ['required', 'digits:6']]);
 
-        try {
-            Mail::to($user->email)->queue(new LoginOtpMail($otp, 'Your Payment OTP', 'payment'));
-        } catch (\Exception $e) {
-            Log::error('Failed to resend payment OTP email: ' . $e->getMessage());
-            return response()->json(['success' => false, 'message' => 'Failed to send OTP'], 500);
-        }
+        $user      = Auth::user();
+        $cachedOtp = Cache::get('payment_otp_'.$user->id);
 
-        Log::info("Resent payment OTP for User {$user->id}: {$otp}");
-        return response()->json(['success' => true, 'message' => 'OTP resent to your email']);
-    }
+        if ($cachedOtp && hash_equals((string) $cachedOtp, (string) $request->otp)) {
+            Cache::forget('payment_otp_'.$user->id);
 
-    public function verifyOtp(Request $request) {
-        $user = auth()->user();
-        $cachedOtp = Cache::get('payment_otp_' . $user->id) ?? Cache::get('otp_' . $user->id);
-
-        if ($request->otp == $cachedOtp) {
-            Cache::forget('payment_otp_' . $user->id);
-            Cache::forget('otp_' . $user->id);
             return response()->json(['success' => true]);
         }
 
         return response()->json(['success' => false, 'message' => 'Invalid or expired OTP'], 422);
     }
 
+    // ------------------------------------------------------------------
+    // PesaPal flow
+    // ------------------------------------------------------------------
+
     public function initiate(Request $request)
     {
+        $data = $request->validate([
+            'course_id'   => ['required', 'integer', 'exists:courses,id'],
+            'cohort_id'   => ['nullable', 'integer', 'exists:cohorts,id'],
+            'amount'      => ['required', 'numeric', 'min:1'],
+            'phone'       => ['nullable', 'string', 'max:25'],
+            'name'        => ['nullable', 'string', 'max:255'],
+            'email'       => ['nullable', 'email'],
+            'organization'=> ['nullable', 'string', 'max:255'],
+            'position'    => ['nullable', 'string', 'max:255'],
+            'street'      => ['nullable', 'string', 'max:255'],
+            'region'      => ['nullable', 'string', 'max:255'],
+            'city'        => ['nullable', 'string', 'max:255'],
+            'postal'      => ['nullable', 'string', 'max:50'],
+        ]);
+
+        $user   = Auth::user();
+        $course = \App\Models\Course::findOrFail($data['course_id']);
+
+        $phone = preg_replace('/\D/', '', $data['phone'] ?? $user->phone ?? '');
+        if (str_starts_with($phone, '0')) {
+            $phone = '255'.substr($phone, 1);
+        }
+
+        $fullName = $data['name'] ?? $user->name;
+        $names    = explode(' ', trim($fullName), 2);
+
         try {
-            $user = auth()->user();
-            $course = \App\Models\Course::findOrFail($request->course_id);
-
-            $phone = preg_replace('/\D/', '', $request->phone ?? $user->phone_number);
-            if (str_starts_with($phone, '0')) { $phone = '255' . substr($phone, 1); }
-
-            // 1. Create Local Record
-            $payment = Payment::create([
-                'reference'     => 'TRH-' . strtoupper(uniqid()),
-                'user_id'       => $user->id,
-                'course_id'     => $course->id,
-                'cohort_id'     => $request->cohort_id, 
-                'first_name'    => $user->name, 
-                'email'         => $user->email,
-                'phone_number'  => $phone,
-                'amount'        => (float)$request->amount,
-                'currency'      => 'TZS',
-                'status'        => 'PENDING',
-            ]);
-
-            // MABADILIKO: Insert data into Invoice table after status being PENDING
-            if ($payment->status === 'PENDING') {
-                Invoice::create([
-                    'payment_id' => $payment->id,
-                    'invoice_no' => 'INV-' . time(),
-                    'amount' => $payment->amount,
+            $payment = DB::transaction(function () use ($data, $user, $course, $phone, $names, $fullName) {
+                $payment = Payment::create([
+                    'reference'    => 'TRH-'.strtoupper(Str::random(12)),
+                    'user_id'      => $user->id,
+                    'course_id'    => $course->id,
+                    'cohort_id'    => $data['cohort_id'] ?? null,
+                    'first_name'   => $names[0] ?? $user->name,
+                    'last_name'    => $names[1] ?? '',
+                    'email'        => $data['email'] ?? $user->email,
+                    'phone_number' => $phone,
+                    'amount'       => $data['amount'],
+                    'currency'     => 'TZS',
+                    'description'  => 'Payment for '.$course->title,
+                    'status'       => 'PENDING',
+                    'user_name'    => $fullName,
+                    'organization' => $data['organization'] ?? null,
+                    'position'     => $data['position'] ?? null,
+                    'street'       => $data['street'] ?? null,
+                    'region'       => $data['region'] ?? null,
+                    'city'         => $data['city'] ?? null,
+                    'postal'       => $data['postal'] ?? null,
+                    'expires_at'   => now()->addDays(7),
+                    'payment_method' => 'Mobile Money / Card',
                 ]);
 
-                // Send email to admin
-                try {
-                    Mail::raw("New Pending Payment: {$payment->reference}", function($message) {
-                        $message->to('josephgenes1999@gmail.com')->subject('New Invoice Generated');
-                    });
-                } catch (\Exception $e) {
-                    Log::error("Admin email failed: " . $e->getMessage());
-                }
-            }
+                Invoice::create([
+                    'payment_id'     => $payment->id,
+                    'invoice_number' => 'INV-'.strtoupper(Str::random(10)),
+                    'amount'         => $payment->amount,
+                    'status'         => 'PENDING',
+                ]);
 
-            // 2. PesaPal Flow
+                return $payment;
+            });
+        } catch (\Throwable $e) {
+            Log::error('Payment creation error: '.$e->getMessage());
+
+            return response()->json(['success' => false, 'message' => 'Could not create the payment record.'], 500);
+        }
+
+        if (! config('services.pesapal.key') || ! config('services.pesapal.secret')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Payment gateway is not configured. Please contact the administrator.',
+            ], 503);
+        }
+
+        try {
             $token = $this->pesapal->getAccessToken();
-            if (!$token) return response()->json(['success' => false, 'message' => 'Auth Token Failed'], 500);
+
+            if (! $token) {
+                return response()->json(['success' => false, 'message' => 'Payment gateway authentication failed.'], 502);
+            }
 
             $ipnId = $this->pesapal->getIpnId($token);
 
             $orderData = [
-                "id"               => $payment->reference,
-                "currency"         => "TZS",
-                "amount"           => (float)$payment->amount,
-                "description"      => "Payment for " . $course->title,
-                "callback_url"     => "http://localhost:3000/dashboard/my-courses",
-                "notification_id"  => $ipnId,
-                "billing_address"  => [
-                    "email_address" => $payment->email,
-                    "phone_number"  => $payment->phone_number,
-                    "first_name"    => $payment->first_name,
-                    "country_code"  => "TZ",
-                ]
+                'id'              => $payment->reference,
+                'currency'        => 'TZS',
+                'amount'          => (float) $payment->amount,
+                'description'     => 'Payment for '.$course->title,
+                'callback_url'    => route('pesapal.callback'),
+                'notification_id' => $ipnId,
+                'billing_address' => [
+                    'email_address' => $payment->email,
+                    'phone_number'  => $payment->phone_number,
+                    'first_name'    => $payment->first_name,
+                    'last_name'     => $payment->last_name ?: $payment->first_name,
+                    'country_code'  => 'TZ',
+                ],
             ];
 
             $result = $this->pesapal->submitOrder($orderData, $token);
 
-            if (isset($result['order_tracking_id'])) {
+            if (! empty($result['order_tracking_id']) && ! empty($result['redirect_url'])) {
                 $payment->update(['tracking_id' => $result['order_tracking_id']]);
-                return response()->json(['success' => true, 'redirect_url' => $result['redirect_url']]);
+
+                return response()->json([
+                    'success'      => true,
+                    'redirect_url' => $result['redirect_url'],
+                    'reference'    => $payment->reference,
+                ]);
             }
 
-            return response()->json(['success' => false, 'message' => 'PesaPal Submission Failed'], 500);
+            Log::error('PesaPal submit order failed', ['response' => $result]);
 
-        } catch (\Exception $e) {
-            Log::error("Payment Error: " . $e->getMessage());
-            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+            return response()->json(['success' => false, 'message' => 'Payment gateway rejected the order.'], 502);
+        } catch (\Throwable $e) {
+            Log::error('Payment initiation error: '.$e->getMessage());
+
+            return response()->json(['success' => false, 'message' => 'Payment gateway is temporarily unavailable.'], 502);
         }
     }
 
+    /** Browser return + IPN from PesaPal. */
     public function callback(Request $request)
     {
-        $trackingId = $request->query('OrderTrackingId');
-        $token = $this->pesapal->getAccessToken();
-        $statusResponse = $this->pesapal->getTransactionStatus($trackingId, $token);
+        $trackingId = $request->input('OrderTrackingId')
+            ?? $request->query('OrderTrackingId')
+            ?? $request->input('orderTrackingId');
 
-        $payment = Payment::where('tracking_id', $trackingId)->first();
-        
-        if ($payment) {
-            $status = strtoupper($statusResponse['payment_status_description'] ?? 'PENDING');
-            
-            // Update status ya payment
-            $payment->update(['status' => $status]);
+        $status = 'PENDING';
 
-            // MABADILIKO: Kama status ni COMPLETED
-            if (in_array($status, ['COMPLETED', 'PAID'])) {
-                
-                // 1. Insert data to Receipt table
-                Receipt::create([
-                    'payment_id' => $payment->id,
-                    'receipt_no' => 'REC-' . time(),
-                    'amount' => $payment->amount
-                ]);
+        if ($trackingId) {
+            try {
+                $token = $this->pesapal->getAccessToken();
 
-                // 2. Send email to admin
-                try {
-                    Mail::raw("Payment Success: {$payment->reference}", function($message) {
-                        $message->to('josephgenes1999@gmail.com')->subject('Payment Successful');
-                    });
-                } catch (\Exception $e) {
-                    Log::error("Admin success email failed: " . $e->getMessage());
+                if ($token) {
+                    $response = $this->pesapal->getTransactionStatus($trackingId, $token);
+                    $status   = strtoupper($response['payment_status_description'] ?? 'PENDING');
+
+                    // PesaPal returns "Completed"/"Failed"/"Invalid".
+                    $status = match ($status) {
+                        'COMPLETED', 'SUCCESS' => 'COMPLETED',
+                        'FAILED', 'REVERSED'   => 'FAILED',
+                        'INVALID'              => 'INVALID',
+                        default                => 'PENDING',
+                    };
                 }
 
-                // 3. Mpe kozi (Code yako ya awali)
-                Enrollment::firstOrCreate([
-                    'user_id' => $payment->user_id,
-                    'cohort_id' => $payment->cohort_id
-                ], [
-                    'amount' => $payment->amount,
-                    'status' => 'PAID'
-                ]);
-            }
+                $payment = Payment::where('tracking_id', $trackingId)->first();
 
-            // MABADILIKO: Kama ikifeli ingiza kwenye Dispute
-            if (in_array($status, ['FAILED', 'REVERSED'])) {
-                Dispute::create([
-                    'payment_id' => $payment->id,
-                    'reason' => 'Transaction ' . $status,
-                ]);
+                if ($payment && $status !== 'PENDING') {
+                    DB::transaction(function () use ($payment, $status, $trackingId) {
+                        $payment->update(['status' => $status]);
+
+                        if ($payment->isPaid()) {
+                            Receipt::firstOrCreate(
+                                ['payment_id' => $payment->id],
+                                [
+                                    'receipt_number'        => 'REC-'.strtoupper(\Illuminate\Support\Str::random(10)),
+                                    'amount'                => $payment->amount,
+                                    'transaction_reference' => $trackingId,
+                                ]
+                            );
+
+                            $payment->invoice()?->update(['status' => 'PAID']);
+                        } elseif (in_array($status, ['FAILED', 'INVALID'], true)) {
+                            Dispute::firstOrCreate(
+                                ['payment_id' => $payment->id, 'reason' => 'Transaction '.$status],
+                                ['status' => 'OPEN']
+                            );
+                        }
+                    });
+                }
+            } catch (\Throwable $e) {
+                Log::error('PesaPal callback error: '.$e->getMessage());
             }
         }
 
-        return redirect()->away(env('FRONTEND_URL', 'http://localhost:5173/') . '/payment-success?status=' . $status);
+        $query = http_build_query([
+            'status'    => $status,
+            'reference' => $request->input('OrderMerchantReference', ''),
+        ]);
+
+        return redirect()->away(config('app.frontend_url').'/payment-success?'.$query);
     }
 
-// App/Http/Controllers/PaymentController.php
-
-public function adminFinancials()
-{
-    // Hakikisha anayetafuta ni Admin
-    if (auth()->user()->role !== 'admin') {
-        return response()->json(['message' => 'Forbidden'], 403);
+    public function adminFinancials()
+    {
+        return response()->json([
+            'success'  => true,
+            'invoices' => Invoice::with('payment.user')->latest()->get(),
+            'receipts' => Receipt::with('payment.user')->latest()->get(),
+            'disputes' => Dispute::with('payment.user')->latest()->get(),
+        ]);
     }
-
-    return response()->json([
-        'success' => true,
-        'invoices' => Invoice::with('payment.user')->latest()->get(),
-        'receipts' => Receipt::with('payment.user')->latest()->get(),
-        'disputes' => Dispute::with('payment.user')->latest()->get(),
-    ]);
-}
-
-
 }

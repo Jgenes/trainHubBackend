@@ -4,22 +4,20 @@ namespace App\Http\Middleware;
 
 use Closure;
 use Illuminate\Http\Request;
+use Symfony\Component\HttpFoundation\Response;
 
 class AdminMiddleware
 {
-    public function handle(Request $request, Closure $next)
+    public function handle(Request $request, Closure $next): Response
     {
-        // Get user via Sanctum guard (Laravel 10+)
-        $user = auth('sanctum')->user();
+        $user = $request->user('sanctum') ?? $request->user();
 
-        // If no user (unauthenticated)
-        if (!$user) {
-            return response()->json(['message' => 'Unauthenticated'], 401);
+        if (! $user) {
+            return response()->json(['message' => 'Unauthenticated.'], 401);
         }
 
-        // If user is not admin
         if ($user->role !== 'admin') {
-            return response()->json(['message' => 'Forbidden'], 403);
+            return response()->json(['message' => 'Forbidden. Administrator access required.'], 403);
         }
 
         return $next($request);

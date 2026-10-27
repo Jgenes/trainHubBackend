@@ -2,76 +2,84 @@
 
 namespace App\Http\Controllers;
 
+use App\Services\PesaPalService;
 use Illuminate\Http\Request;
-use App\Services\PesapalV30Service;
+use Illuminate\Support\Facades\Log;
 
+/** Legacy browser-based PesaPal flow kept for the /pesapal pages. */
 class PesapalController extends Controller
 {
+    public function __construct(protected PesaPalService $pesapal)
+    {
+    }
+
     public function pay(Request $request)
     {
-        $pesapal = new PesapalV30Service(config('services.pesapal.mode'));
-
-        $token = $pesapal->getAccessToken(
-            config('services.pesapal.key'),
-            config('services.pesapal.secret')
-        )->token;
-
-        $ipn = $pesapal->registerIPN(
-            $token,
-            route('pesapal.callback')
-        );
-
-        $order = [
-            "id" => uniqid('ORD-'),
-            "currency" => $request->currency,
-            "amount" => number_format($request->amount, 2),
-            "description" => $request->description,
-            "callback_url" => route('pesapal.redirect'),
-            "notification_id" => $ipn->ipn_id,
-            "billing_address" => [
-                "email_address" => $request->email,
-                "phone_number" => $request->phone,
-                "country_code" => "TZ",
-                "first_name" => $request->first_name,
-                "last_name" => $request->last_name,
-            ]
-        ];
-
-        $response = $pesapal->submitOrder($token, $order);
-
-        return view('payments.iframe', [
-            'iframe_src' => $response->redirect_url
+        $data = $request->validate([
+            'amount'      => ['required', 'numeric', 'min:1'],
+            'currency'    => ['nullable', 'string', 'size:3'],
+            'description' => ['nullable', 'string', 'max:255'],
+            'email'       => ['required', 'email'],
+            'phone'       => ['nullable', 'string', 'max:25'],
+            'first_name'  => ['required', 'string', 'max:255'],
+            'last_name'   => ['nullable', 'string', 'max:255'],
         ]);
+
+        try {
+            $token = $this->pesapal->getAccessToken();
+
+            if (! $token) {
+                return response()->json(['message' => 'Payment gateway authentication failed.'], 502);
+            }
+
+            $ipnId = $this->pesapal->getIpnId($token);
+
+            $order = [
+                'id'              => 'ORD-'.strtoupper(bin2hex(random_bytes(6))),
+                'currency'        => $data['currency'] ?? 'TZS',
+                'amount'          => (float) $data['amount'],
+                'description'     => $data['description'] ?? 'TrainingHub payment',
+                'callback_url'    => route('pesapal.web.redirect'),
+                'notification_id' => $ipnId,
+                'billing_address' => [
+                    'email_address' => $data['email'],
+                    'phone_number'  => $data['phone'] ?? '',
+                    'country_code'  => 'TZ',
+                    'first_name'    => $data['first_name'],
+                    'last_name'     => $data['last_name'] ?? $data['first_name'],
+                ],
+            ];
+
+            $response = $this->pesapal->submitOrder($order, $token);
+
+            if (empty($response['redirect_url'])) {
+                return response()->json(['message' => 'Payment gateway rejected the order.'], 502);
+            }
+
+            return view('payments.iframe', ['iframe_src' => $response['redirect_url']]);
+        } catch (\Throwable $e) {
+            Log::error('Legacy PesaPal pay error: '.$e->getMessage());
+
+            return response()->json(['message' => 'Payment gateway is temporarily unavailable.'], 502);
+        }
     }
 
-    /**
-     * USER REDIRECT (browser)
-     * HII NDIYO redirect uliokuwa unauliza iko wapi
-     */
     public function redirect(Request $request)
     {
-        $orderTrackingId = $request->OrderTrackingId ?? null;
-        $merchantRef     = $request->OrderMerchantReference ?? null;
-
-        // Hapa USIBADILISHE chochote kingine kwa sasa
-        // unaweza kuonyesha tu status page
         return view('payments.result', [
-            'tracking_id' => $orderTrackingId,
-            'order_id' => $merchantRef
+            'tracking_id' => $request->input('OrderTrackingId'),
+            'order_id'    => $request->input('OrderMerchantReference'),
         ]);
     }
 
-    /**
-     * PESAPAL IPN (server → server)
-     */
     public function callback(Request $request)
     {
-        // Pesapal hutuma hivi
-        $orderTrackingId = $request->OrderTrackingId;
-        $merchantRef     = $request->OrderMerchantReference;
-        $status          = $request->Status; // COMPLETED | FAILED | INVALID
-
-        // Kwa sasa rudisha OK tu (inatosha kufanya iseme successful)
-        return response()->json(['status' => 'OK']);
+        // The authoritative status update happens on /api/pesapal/callback.
+        return response()->json([
+            'order_notification_type' => $request->input('OrderNotificationType'),
+            'order_tracking_id'       => $request->input('OrderTrackingId'),
+            'order_merchant_reference'=> $request->input('OrderMerchantReference'),
+            'status'                  => 'OK',
+        ]);
     }
 }
