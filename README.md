@@ -64,8 +64,10 @@ initiate/callback flow (HTTP faked).
 | `APP_KEY` | Encryption key — **required** | — |
 | `APP_URL` | Public API base URL (used in generated links) | `http://localhost:8000` |
 | `FRONTEND_URL` | React app URL; activation, reset and payment redirects use it | `http://localhost:5173` |
-| `CORS_ALLOWED_ORIGINS` | Comma-separated origins allowed with credentials | `localhost:5173,127.0.0.1:5173,localhost:3000` |
+| `CORS_ALLOWED_ORIGINS` | Comma-separated browser origins allowed to call the API | `*` (any origin) |
 | `SANCTUM_STATEFUL_DOMAINS` | First-party SPA domains | `localhost:5173,...` |
+| `CORS_SUPPORTS_CREDENTIALS` | Send `Access-Control-Allow-Credentials` | `true` |
+| `CORS_ALLOWED_ORIGIN_PATTERNS` | Optional regex for dynamic preview hosts | — |
 | `DB_*` | Database connection | SQLite |
 | `QUEUE_CONNECTION` | `sync` (no worker needed) or `database` + `php artisan queue:work` | `sync` in the example |
 | `CACHE_STORE` / `SESSION_DRIVER` | `file` / `database` / `redis` | `file` |
@@ -132,3 +134,63 @@ as a release step.
   migrations never created (invoices, receipts, disputes, payment extras,
   lesson completions, password reset tokens). It is guarded by
   `Schema::hasColumn` / `hasTable`, so it is safe on new and existing databases.
+
+## 9. Troubleshooting CORS
+
+If the browser console says `No 'Access-Control-Allow-Origin' header is present
+on the requested resource` (or the preflight fails), the API is either not
+sending the header or is returning an error page / tunnel interstitial that
+never reaches Laravel.
+
+**1. Check the allowlist.** `config/cors.php` allows every origin by default,
+but if `CORS_ALLOWED_ORIGINS` is set, only those exact origins are allowed.
+Every host that serves your SPA must be listed, including `www` and `https`:
+
+```dotenv
+CORS_ALLOWED_ORIGINS=https://traininghubtz.co.tz,https://www.traininghubtz.co.tz,http://localhost:5173
+SANCTUM_STATEFUL_DOMAINS=traininghubtz.co.tz,www.traininghubtz.co.tz,localhost:5173
+```
+
+**2. Clear the config cache.** On any server using `php artisan config:cache`,
+editing `.env` alone does nothing — Laravel keeps reading the cached values:
+
+```bash
+php artisan config:clear
+php artisan config:cache   # optional, re-cache afterwards
+php artisan optimize:clear # if you also cached routes/views
+```
+
+Restart `php artisan serve`, PHP-FPM or the container after this.
+
+**3. Verify with curl** (no browser involved):
+
+```bash
+curl -i -H "Origin: https://traininghubtz.co.tz" https://YOUR-API/api/public-courses
+curl -i -X OPTIONS -H "Origin: https://traininghubtz.co.tz" \
+  -H "Access-Control-Request-Method: POST" \
+  -H "Access-Control-Request-Headers: content-type,authorization" \
+  https://YOUR-API/api/register
+```
+
+Both must return `Access-Control-Allow-Origin: https://traininghubtz.co.tz`.
+If the body is HTML instead of JSON, the request never reached Laravel — see 4.
+
+**4. ngrok.** `*.ngrok-free.dev` shows a browser-warning HTML interstitial for
+requests that look like they come from a browser. That page has no CORS headers,
+so the browser reports a CORS error even though the API is fine. Add the header
+to your frontend HTTP client (in the React repo):
+
+```js
+// src/api/axio.js
+api.defaults.headers.common["ngrok-skip-browser-warning"] = "true";
+```
+
+or start the tunnel with `ngrok http 8000 --request-header-add
+"ngrok-skip-browser-warning: true"`. For production, deploy the API to a real
+domain (the included `Dockerfile` + `render.yaml` do this) and point the SPA at
+that URL instead of an ngrok tunnel.
+
+**5. Error responses.** `App\Support\Cors` is wired into the exception handler
+via `$exceptions->respond(...)`, so 4xx/5xx responses also carry CORS headers.
+If a CORS error persists, open the failing request in the Network tab and check
+its real status/body — it is usually a 500 with the actual cause in the log.

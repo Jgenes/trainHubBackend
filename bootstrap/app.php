@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Middleware\AdminMiddleware;
+use App\Support\Cors;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -27,5 +28,11 @@ return Application::configure(basePath: dirname(__DIR__))
         // Always answer API requests with JSON, including 404/405/500.
         $exceptions->shouldRenderJsonWhen(
             fn ($request, $e) => $request->is('api/*') || $request->expectsJson()
+        );
+
+        // Error responses never reach HandleCors' success path, so without this
+        // a 500 shows up in the browser as a misleading CORS error.
+        $exceptions->respond(
+            fn ($response, $e, $request) => Cors::apply($request, $response)
         );
     })->create();
