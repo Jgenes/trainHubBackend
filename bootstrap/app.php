@@ -5,6 +5,7 @@ use App\Support\Cors;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
+use Illuminate\Http\Request;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -17,6 +18,23 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->alias([
             'admin' => AdminMiddleware::class,
         ]);
+
+        // The API normally sits behind a reverse proxy: Apache in the Docker
+        // image, Render's router, or an ngrok tunnel. Trust the immediately
+        // calling IP's forwarding headers so Laravel sees the real
+        // scheme/host/port. Without this an HTTPS request behind the proxy
+        // looks like plain HTTP, which breaks generated URLs, redirects and
+        // secure cookies.
+        //
+        // Note: this closure runs before .env is loaded, so read runtime
+        // configuration from config/*.php (or a provider), never env() here.
+        $middleware->trustProxies(at: '*', headers:
+            Request::HEADER_X_FORWARDED_FOR
+            | Request::HEADER_X_FORWARDED_HOST
+            | Request::HEADER_X_FORWARDED_PORT
+            | Request::HEADER_X_FORWARDED_PROTO
+            | Request::HEADER_X_FORWARDED_PREFIX
+        );
 
         // Sanctum SPA support (session cookies / CSRF for first-party fronts).
         $middleware->statefulApi();

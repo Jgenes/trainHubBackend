@@ -68,6 +68,7 @@ initiate/callback flow (HTTP faked).
 | `SANCTUM_STATEFUL_DOMAINS` | First-party SPA domains | `localhost:5173,...` |
 | `CORS_SUPPORTS_CREDENTIALS` | Send `Access-Control-Allow-Credentials` | `true` |
 | `CORS_ALLOWED_ORIGIN_PATTERNS` | Optional regex for dynamic preview hosts | — |
+| `CORS_MAX_AGE` | Seconds a browser may cache a preflight (OPTIONS) response | `600` |
 | `DB_*` | Database connection | SQLite |
 | `QUEUE_CONNECTION` | `sync` (no worker needed) or `database` + `php artisan queue:work` | `sync` in the example |
 | `CACHE_STORE` / `SESSION_DRIVER` | `file` / `database` / `redis` | `file` |
@@ -142,6 +143,34 @@ on the requested resource` (or the preflight fails), the API is either not
 sending the header or is returning an error page / tunnel interstitial that
 never reaches Laravel.
 
+**0. Did the request reach Laravel at all?** Check this first — it is the most
+common cause and the easiest to misread, because Chrome reports it as a CORS
+error:
+
+```
+GET https://api-host/api/public-courses net::ERR_FAILED 404 (Not Found)
+```
+
+A **404 together with a CORS error on every endpoint** almost always means the
+host in the SPA's `VITE_API_URL` / axios `baseURL` is answering, but not with
+your application: a stopped tunnel, a stale ngrok URL, or a host pointed at the
+frontend dev server instead of the API. One request settles it:
+
+```bash
+curl -i https://api-host/api/cors-check
+```
+
+| What comes back | Meaning |
+| --- | --- |
+| JSON with `"ok": true` | The request reached Laravel — go to **1**. |
+| `ERR_NGROK_3200 … is offline` | The tunnel is down. Restart it with `ngrok http 8000 --url=https://<your-domain>.ngrok-free.dev`. Without a reserved domain the free tier picks a **random** URL on every restart, so a hard-coded ngrok URL in a deployed SPA breaks the moment the tunnel restarts. |
+| A 404 HTML page, or a page served by Vite/nginx | The tunnel or DNS points at the wrong port. The API must be `php artisan serve --port=8000` (or the deployed container), not `npm run dev` on `:5173`. |
+| `ERR_NGROK_6024` / an ngrok warning page | See **4**. |
+
+`/api/cors-check` echoes the `Origin` it received, whether that origin is
+allowed, and the active allowlist — so it also confirms the deployment is
+running the current config.
+
 **1. Check the allowlist.** `config/cors.php` allows every origin by default,
 but if `CORS_ALLOWED_ORIGINS` is set, only those exact origins are allowed.
 Every host that serves your SPA must be listed, including `www` and `https`:
@@ -175,20 +204,26 @@ curl -i -X OPTIONS -H "Origin: https://traininghubtz.co.tz" \
 Both must return `Access-Control-Allow-Origin: https://traininghubtz.co.tz`.
 If the body is HTML instead of JSON, the request never reached Laravel — see 4.
 
-**4. ngrok.** `*.ngrok-free.dev` shows a browser-warning HTML interstitial for
-requests that look like they come from a browser. That page has no CORS headers,
-so the browser reports a CORS error even though the API is fine. Add the header
-to your frontend HTTP client (in the React repo):
+**4. ngrok.** The free tier serves an HTML interstitial (`ERR_NGROK_6024`) in
+front of browser traffic. That page has no CORS headers, so the browser reports
+a CORS error even though the API is fine. The header has to be sent **by the
+client**, so it must be added in the React app, not in the tunnel config —
+`ngrok http --request-header-add` adds the header on the way to your upstream
+(and is deprecated), so it does not help here.
 
 ```js
 // src/api/axio.js
 api.defaults.headers.common["ngrok-skip-browser-warning"] = "true";
 ```
 
-or start the tunnel with `ngrok http 8000 --request-header-add
-"ngrok-skip-browser-warning: true"`. For production, deploy the API to a real
-domain (the included `Dockerfile` + `render.yaml` do this) and point the SPA at
-that URL instead of an ngrok tunnel.
+That makes every request non-simple, so each one now sends an OPTIONS preflight
+first; Laravel answers it because `config/cors.php` allows all headers and
+paths. Alternatively, open the ngrok URL in a browser tab and click **Visit**
+once — ngrok then suppresses the interstitial for that browser for 7 days.
+
+For anything user-facing, deploy the API to a real domain (the included
+`Dockerfile` + `render.yaml` do this) and point the SPA at that URL instead of
+a tunnel.
 
 **5. Error responses.** `App\Support\Cors` is wired into the exception handler
 via `$exceptions->respond(...)`, so 4xx/5xx responses also carry CORS headers.
