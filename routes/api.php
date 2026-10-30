@@ -15,6 +15,7 @@ use App\Http\Controllers\{
     DashboardController,
     EnrollmentController,
     LearningController,
+    MailCheckController,
     PasswordResetController,
     PaymentController,
     ProviderOnboardingController,
@@ -41,6 +42,10 @@ Route::get('/top-providers', [PublicController::class, 'topProviders']);
 // CORS canary: confirms the request actually reached Laravel. See
 // PublicController::corsCheck() and "Troubleshooting CORS" in the README.
 Route::get('/cors-check', [PublicController::class, 'corsCheck']);
+
+// Mail canary: explains why activation/OTP mail never arrives. Answers 404
+// until MAIL_CHECK_TOKEN is configured. See MailCheckController.
+Route::match(['get', 'post'], '/mail-check', MailCheckController::class);
 
 Route::post('/register', [AuthController::class, 'userRegister']);
 Route::post('/tenant-register', [AuthController::class, 'tenantRegister']);

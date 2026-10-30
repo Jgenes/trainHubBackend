@@ -73,12 +73,19 @@ initiate/callback flow (HTTP faked).
 | `QUEUE_CONNECTION` | `sync` (no worker needed) or `database` + `php artisan queue:work` | `sync` in the example |
 | `CACHE_STORE` / `SESSION_DRIVER` | `file` / `database` / `redis` | `file` |
 | `MAIL_*` | SMTP used for activation, OTP and reset emails | `log` in the example |
+| `MAIL_TIMEOUT` | Seconds before an SMTP connection is abandoned | `15` |
+| `MAIL_MAILER=http` + `MAIL_HTTP_PROVIDER`, `MAIL_HTTP_API_KEY` | Send over HTTPS (Resend/Brevo/SendGrid) on hosts that block SMTP ports | — |
+| `MAIL_CHECK_TOKEN` | Enables `GET /api/mail-check?token=…` (mail diagnostics over HTTP) | disabled |
 | `PESAPAL_CONSUMER_KEY`, `PESAPAL_CONSUMER_SECRET` | PesaPal v3 credentials | — |
 | `PESAPAL_URL`, `PESAPAL_MODE` | Gateway URL and `sandbox`/`live` | `https://pay.pesapal.com/v3`, `sandbox` |
 | `PAYMENT_CALLBACK_TOKEN` | Optional shared secret for `POST /api/payment-callback` (send `X-Callback-Token`) | — |
 
 All emails are sent synchronously, so registration and login work without a
-queue worker. Mail failures are logged and never leave a half-created account.
+queue worker. Mail failures are logged and never leave a half-created account;
+`POST /api/register` returns `mail_sent: false` when the activation email could
+not be handed to the mailer.
+
+If OTP codes never arrive, jump to **§10 Troubleshooting email / OTP delivery**.
 
 ## 5. Authentication
 
@@ -229,3 +236,123 @@ a tunnel.
 via `$exceptions->respond(...)`, so 4xx/5xx responses also carry CORS headers.
 If a CORS error persists, open the failing request in the Network tab and check
 its real status/body — it is usually a 500 with the actual cause in the log.
+
+## 10. Troubleshooting email / OTP delivery
+
+Symptom: registration answers `201` but no activation link arrives, or
+`POST /api/login` answers `500 Failed to send the verification code`.
+
+### 10.1 Run the built-in diagnosis first
+
+```bash
+php artisan mail:diagnose                  # config + DNS + TCP/TLS checks
+php artisan mail:diagnose --to=you@example.com   # also sends a real message
+php artisan mail:diagnose --no-network     # offline: configuration only
+```
+
+The same report is available over HTTP (set `MAIL_CHECK_TOKEN` first, then
+restart or re-cache the config):
+
+```bash
+curl -s "https://api-host/api/mail-check?token=$MAIL_CHECK_TOKEN" | jq
+curl -s "https://api-host/api/mail-check?token=$MAIL_CHECK_TOKEN&send=you@example.com" | jq
+```
+
+| Status | Meaning |
+| --- | --- |
+| `200` | No blocking problem found in the mail configuration |
+| `503` | At least one check failed — read `checks[].hint` |
+| `403` | Wrong or missing token |
+| `404` | `MAIL_CHECK_TOKEN` is not set, so the endpoint is disabled |
+
+### 10.2 What actually breaks delivery, in the order it bites
+
+**1. `MAIL_MAILER` is not `smtp`.** With `log`, every message is written to
+`storage/logs/laravel.log` and never sent. This is the default in
+`.env.example`, and `render.yaml` used to pin it too — a dashboard variable
+overrides `.env`, so delete it there as well.
+
+**2. The config cache is stale.** The Docker entrypoint runs
+`php artisan config:cache`, so editing `.env` on a running server changes
+nothing until you run `php artisan optimize:clear` (or restart the container).
+
+**3. `MAIL_HOST` does not exist in DNS.** This is the case for this project:
+`mail.traininghubtz.co.tz` returns **NXDOMAIN**, so PHP fails with
+`php_network_getaddresses: getaddrinfo failed` before any password is checked.
+The zone is hosted on Netlify DNS (`dns1.p01.nsone.net`) and only `api.` and
+`www.` exist. Add, in the Netlify DNS panel:
+
+```
+mail.traininghubtz.co.tz   A      <IP of the web/mail server>   (often the same as api.)
+traininghubtz.co.tz        MX     10 mail.traininghubtz.co.tz
+traininghubtz.co.tz        TXT    "v=spf1 a mx include:<provider> ~all"
+default._domainkey...      TXT    <DKIM key from the mail server>
+```
+
+Without the MX record `info@traininghubtz.co.tz` cannot receive mail at all
+(replies and password-reset notices bounce), and without SPF/DKIM the OTP mail
+usually lands in spam. Verify with:
+
+```bash
+dig +short mail.traininghubtz.co.tz
+dig +short MX traininghubtz.co.tz
+dig +short TXT traininghubtz.co.tz
+```
+
+**4. Port and scheme disagree.** Port `465` needs implicit TLS
+(`MAIL_SCHEME=smtps`, or leave `MAIL_SCHEME` empty — Laravel treats 465 as
+`smtps`); port `587` needs `MAIL_SCHEME=smtp` (STARTTLS). Pairing 465 with
+`smtp`, or 587 with `smtps`, fails the handshake.
+
+**5. The host blocks outbound SMTP.** Render's free plan blocks ports 25, 465
+and 587; connections time out instead of returning an error. Use a provider
+port that is open (25**2**5, as Brevo/Mailgun/SendGrid offer), or the HTTPS
+mailer described in §10.4.
+
+**6. Credentials or From address are rejected** (`535`, `550 Sender address
+rejected`). On cPanel/WHM `MAIL_USERNAME` is the **full mailbox address** and
+`MAIL_FROM_ADDRESS` must be a mailbox that account owns — normally the same one.
+
+### 10.3 Known-good cPanel configuration
+
+```dotenv
+MAIL_MAILER=smtp
+MAIL_SCHEME=smtps
+MAIL_HOST=mail.traininghubtz.co.tz     # only after the A record exists
+MAIL_PORT=465
+MAIL_USERNAME=info@traininghubtz.co.tz
+MAIL_PASSWORD="the mailbox password, not the placeholder"
+MAIL_FROM_ADDRESS="info@traininghubtz.co.tz"
+MAIL_FROM_NAME="${APP_NAME}"
+MAIL_TIMEOUT=15
+```
+
+Test the mailbox directly, without Laravel:
+
+```bash
+openssl s_client -connect mail.traininghubtz.co.tz:465 -crlf -quiet
+# then: EHLO test / AUTH LOGIN (base64 user, base64 password) / QUIT
+```
+
+### 10.4 If SMTP is impossible on your host
+
+The `http` mailer posts the message over HTTPS (port 443) to a transactional
+email API, so blocked SMTP ports do not matter:
+
+```dotenv
+MAIL_MAILER=http
+MAIL_HTTP_PROVIDER=resend      # resend | brevo | sendgrid
+MAIL_HTTP_API_KEY=re_xxxxxxxx
+MAIL_FROM_ADDRESS="info@traininghubtz.co.tz"
+```
+
+Resend, Brevo and SendGrid all require the sending domain to be verified with
+DNS records (SPF/DKIM) before they accept it, which also fixes §10.2.3.
+
+### 10.5 Nothing in the log?
+
+`storage/logs/laravel.log` records every failure as `Activation email failed`,
+`Login OTP email failed`, `Resend OTP email failed` or `Payment OTP email
+failed`, with an extra `hint` field translating the SMTP error. If those lines
+are absent the message *was* handed to the mail server — check the spam folder
+and the mail server's own logs (cPanel → *Track Delivery*).

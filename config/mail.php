@@ -45,8 +45,27 @@ return [
             'port' => env('MAIL_PORT', 2525),
             'username' => env('MAIL_USERNAME'),
             'password' => env('MAIL_PASSWORD'),
-            'timeout' => null,
+            // Without a timeout a blocked SMTP port hangs a request for the
+            // PHP default (60s) before registration/login returns.
+            'timeout' => env('MAIL_TIMEOUT') !== null ? (int) env('MAIL_TIMEOUT') : 15,
             'local_domain' => env('MAIL_EHLO_DOMAIN', parse_url((string) env('APP_URL', 'http://localhost'), PHP_URL_HOST)),
+        ],
+
+        /*
+         * Sends over HTTPS through a transactional email API instead of SMTP.
+         * Needed on hosts that block outbound ports 25/465/587 (Render's free
+         * plan, for example).
+         *
+         *   MAIL_MAILER=http
+         *   MAIL_HTTP_PROVIDER=resend|brevo|sendgrid
+         *   MAIL_HTTP_API_KEY=...
+         */
+        'http' => [
+            'transport' => 'http',
+            'provider'  => env('MAIL_HTTP_PROVIDER', 'resend'),
+            'api_key'   => env('MAIL_HTTP_API_KEY', env('RESEND_API_KEY')),
+            'endpoint'  => env('MAIL_HTTP_ENDPOINT'),
+            'timeout'   => (int) env('MAIL_HTTP_TIMEOUT', 15),
         ],
 
         'ses' => [
@@ -113,6 +132,22 @@ return [
     'from' => [
         'address' => env('MAIL_FROM_ADDRESS', 'hello@example.com'),
         'name' => env('MAIL_FROM_NAME', 'Example'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Mail diagnostics
+    |--------------------------------------------------------------------------
+    |
+    | Backs `php artisan mail:diagnose` and the `GET /api/mail-check` endpoint.
+    | The endpoint answers 404 until MAIL_CHECK_TOKEN is set; when it is set,
+    | callers must pass it as ?token=… or the X-Mail-Check-Token header.
+    |
+    */
+
+    'diagnostics' => [
+        'token'   => env('MAIL_CHECK_TOKEN'),
+        'timeout' => (int) env('MAIL_CHECK_TIMEOUT', 5),
     ],
 
 ];

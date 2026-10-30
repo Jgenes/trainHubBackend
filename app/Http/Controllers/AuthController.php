@@ -6,6 +6,7 @@ use App\Mail\ActivateAccountMail;
 use App\Mail\LoginOtpMail;
 use App\Models\Provider;
 use App\Models\User;
+use App\Support\MailDiagnostics;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
@@ -51,23 +52,41 @@ class AuthController extends Controller
             'activation_expires_at'  => Carbon::now()->addHours(24),
         ]);
 
-        $this->sendActivationEmail($user, $token);
+        $sent = $this->sendActivationEmail($user, $token);
 
         return response()->json([
-            'message' => 'Account created. An activation link has been sent to your email.',
+            'message'   => $sent
+                ? 'Account created. An activation link has been sent to your email.'
+                : 'Account created, but the activation email could not be sent. '
+                    .'Contact support so the account can be activated.',
+            // Lets the SPA show a different screen (and lets you spot a broken
+            // mail configuration from the browser without reading logs).
+            'mail_sent' => $sent,
         ], 201);
     }
 
-    private function sendActivationEmail(User $user, string $token): void
+    /**
+     * @return bool Whether the mailer accepted the message.
+     */
+    private function sendActivationEmail(User $user, string $token): bool
     {
         $link = route('activate.account', ['token' => $token]);
 
         try {
             Mail::to($user->email)->send(new ActivateAccountMail($link));
+
+            return true;
         } catch (\Throwable $e) {
             // A broken SMTP server must not prevent account creation. The link is
-            // logged so an administrator can still activate the account.
-            Log::error('Activation email failed: '.$e->getMessage(), ['link' => $link]);
+            // logged so an administrator can still activate the account, and the
+            // reason is translated into an actionable hint (see
+            // `php artisan mail:diagnose`).
+            Log::error('Activation email failed: '.$e->getMessage(), [
+                'link' => $link,
+                'hint' => (new MailDiagnostics())->explain($e->getMessage()),
+            ]);
+
+            return false;
         }
     }
 
@@ -137,7 +156,9 @@ class AuthController extends Controller
         try {
             Mail::to($user->email)->send(new LoginOtpMail($otp, 'Your Login OTP', 'login'));
         } catch (\Throwable $e) {
-            Log::error('Login OTP email failed: '.$e->getMessage());
+            Log::error('Login OTP email failed: '.$e->getMessage(), [
+                'hint' => (new MailDiagnostics())->explain($e->getMessage()),
+            ]);
 
             return response()->json(['message' => 'Failed to send the verification code. Please try again later.'], 500);
         }
@@ -168,7 +189,9 @@ class AuthController extends Controller
         try {
             Mail::to($user->email)->send(new LoginOtpMail($otp, 'Your Login OTP', 'login'));
         } catch (\Throwable $e) {
-            Log::error('Resend OTP email failed: '.$e->getMessage());
+            Log::error('Resend OTP email failed: '.$e->getMessage(), [
+                'hint' => (new MailDiagnostics())->explain($e->getMessage()),
+            ]);
 
             return response()->json(['message' => 'Failed to send the verification code.'], 500);
         }
