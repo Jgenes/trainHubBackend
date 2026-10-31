@@ -6,11 +6,14 @@ use App\Models\Cohort;
 use App\Models\Course;
 use App\Models\Enrollment;
 use App\Models\Payment;
+use App\Models\Provider;
 use App\Models\User;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Illuminate\Http\UploadedFile;
 use Tests\TestCase;
 
 class ApiSmokeTest extends TestCase
@@ -180,6 +183,84 @@ class ApiSmokeTest extends TestCase
         $this->withHeaders($this->auth($admin))->getJson('/api/admin/stats')
             ->assertOk()
             ->assertJsonStructure(['totalUsers', 'totalProviders', 'totalCourses', 'totalRevenue', 'revenueChart']);
+    }
+
+    public function test_provider_kyc_documents_upload_onboarding_and_profile_and_download_privately(): void
+    {
+        Storage::fake('local');
+        Mail::fake();
+
+        $providerUser = $this->user('tenant');
+        $providerHeaders = $this->auth($providerUser);
+
+        $this->withHeaders($providerHeaders)->post('/api/provider/onboarding', [
+            'legal_name'    => 'KYC Training Ltd',
+            'provider_type' => 'Private',
+            'region'        => 'Dar es Salaam',
+            'contact_name'  => 'Jane Doe',
+            'contact_phone' => '0712345678',
+            'brela_doc'     => UploadedFile::fake()->create('brela.pdf', 100, 'application/pdf'),
+        ])->assertCreated();
+
+        $provider = Provider::where('created_by', $providerUser->id)->firstOrFail();
+        $brelaPath = $provider->brela_doc;
+        $this->assertNotNull($brelaPath);
+        Storage::disk('local')->assertExists($brelaPath);
+
+        $this->withHeaders($providerHeaders)->post('/api/provider/kyc/documents', [
+            'tin_doc' => UploadedFile::fake()->create('tin.pdf', 100, 'application/pdf'),
+        ])->assertOk()->assertJsonPath('data.brela_doc', $brelaPath);
+
+        $provider->refresh();
+        $this->assertNotNull($provider->tin_doc);
+        Storage::disk('local')->assertExists($provider->tin_doc);
+
+        $this->withHeaders($providerHeaders)->get('/api/provider/kyc/documents/brela')
+            ->assertOk()
+            ->assertHeader('content-disposition');
+        $this->withHeaders($providerHeaders)->get('/api/provider/kyc/documents/tin')
+            ->assertOk()
+            ->assertHeader('content-disposition');
+
+        $otherProvider = $this->user('tenant');
+        $this->withHeaders($this->auth($otherProvider))
+            ->getJson('/api/provider/kyc/documents/brela')
+            ->assertNotFound();
+
+        $admin = $this->user('admin');
+        $this->withHeaders($this->auth($admin))
+            ->get('/api/admin/providers/'.$provider->id.'/kyc/tin')
+            ->assertOk()
+            ->assertHeader('content-disposition');
+    }
+
+    public function test_provider_profile_update_accepts_kyc_documents(): void
+    {
+        Storage::fake('local');
+        Mail::fake();
+
+        $user = $this->user('tenant');
+        $headers = $this->auth($user);
+        $this->withHeaders($headers)->postJson('/api/provider/onboarding', [
+            'legal_name'    => 'Profile Training Ltd',
+            'provider_type' => 'Private',
+            'region'        => 'Dar es Salaam',
+            'contact_name'  => 'Jane Doe',
+            'contact_phone' => '0712345678',
+        ])->assertCreated();
+
+        $this->withHeaders($headers)->post('/api/provider/profile/update', [
+            'legal_name'    => 'Profile Training Ltd',
+            'region'        => 'Dar es Salaam',
+            'contact_name'  => 'Jane Doe',
+            'contact_phone' => '0712345678',
+            'contact_email' => $user->email,
+            'tin_doc'       => UploadedFile::fake()->create('tin.pdf', 100, 'application/pdf'),
+        ])->assertOk();
+
+        $provider = Provider::where('created_by', $user->id)->firstOrFail();
+        $this->assertNotNull($provider->tin_doc);
+        Storage::disk('local')->assertExists($provider->tin_doc);
     }
 
     public function test_provider_course_and_cohort_flow(): void

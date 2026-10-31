@@ -3,15 +3,14 @@
 namespace App\Http\Controllers;
 
 use App\Models\Provider;
+use App\Services\ProviderKycDocumentStorage;
 use Illuminate\Http\Request;
-use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\File;
 use Illuminate\Support\Str;
 
 class ProviderOnboardingController extends Controller
 {
-    public function store(Request $request)
+    public function store(Request $request, ProviderKycDocumentStorage $documents)
     {
         $data = $request->validate([
             'legal_name'      => ['required', 'string', 'min:3', 'max:255'],
@@ -29,13 +28,13 @@ class ProviderOnboardingController extends Controller
             'contact_role'    => ['nullable', 'string', 'max:255'],
             'contact_phone'   => ['required', 'string', 'max:50'],
             'contact_email'   => ['nullable', 'email', 'max:255'],
-            'brela_doc'       => ['nullable', 'file', 'max:10240'],
-            'tin_doc'         => ['nullable', 'file', 'max:10240'],
+            'brela_doc'       => ['nullable', 'file', 'mimes:pdf,jpg,jpeg,png', 'max:10240'],
+            'tin_doc'         => ['nullable', 'file', 'mimes:pdf,jpg,jpeg,png', 'max:10240'],
         ]);
 
         $user = $request->user();
 
-        $provider = DB::transaction(function () use ($data, $request, $user) {
+        $provider = DB::transaction(function () use ($data, $request, $user, $documents) {
             $slug = Str::slug($data['brand_name'] ?? $data['legal_name']);
             if (Provider::where('provider_slug', $slug)->where('created_by', '!=', $user->id)->exists()) {
                 $slug .= '-'.Str::lower(Str::random(5));
@@ -61,8 +60,6 @@ class ProviderOnboardingController extends Controller
                 'provider_slug'    => $slug,
                 'created_by'       => $user->id,
                 'user_id'          => $user->id,
-                'brela_doc'        => $this->storeDoc($request, 'brela_doc'),
-                'tin_doc'          => $this->storeDoc($request, 'tin_doc'),
             ];
 
             $provider = Provider::where('created_by', $user->id)->first();
@@ -74,6 +71,8 @@ class ProviderOnboardingController extends Controller
                 $attributes['id'] = Str::uuid()->toString();
                 $provider = Provider::create($attributes);
             }
+
+            $provider->update($documents->store($provider, $request));
 
             $user->update([
                 'provider_id' => $provider->id,
@@ -88,25 +87,5 @@ class ProviderOnboardingController extends Controller
             'provider' => $provider,
             'redirect' => '/provider/verification',
         ], 201);
-    }
-
-    private function storeDoc(Request $request, string $field): ?string
-    {
-        if (! $request->hasFile($field)) {
-            return null;
-        }
-
-        $file = $request->file($field);
-        if (! $file instanceof UploadedFile) {
-            return null;
-        }
-
-        $target = public_path('uploads/providers');
-        File::ensureDirectoryExists($target);
-
-        $name = Str::random(20).'.'.$file->getClientOriginalExtension();
-        $file->move($target, $name);
-
-        return 'uploads/providers/'.$name;
     }
 }

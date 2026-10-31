@@ -106,11 +106,21 @@ If OTP codes never arrive, jump to **§10 Troubleshooting email / OTP delivery**
 | Auth | `/api/register`, `/api/login`, `/api/verify-otp`, `/api/resend-otp`, `/api/forgot-password`, `/api/reset-password` |
 | Learner | `/api/my-learning`, `/api/my-enrollments`, `/api/my-payments`, `/api/courses/{id}/learning`, `/api/courses/{id}/complete-lesson`, `/api/reviews` |
 | Payments | `/api/payment/send-otp`, `/api/payment/verify-otp`, `/api/payment/initiate`, `/api/pesapal/callback`, `/api/download-document/{reference}`, `/api/qr-code/{data}` |
-| Provider | `/api/provider/onboarding`, `/api/provider/profile`, `/api/provider/payments`, `/api/provider/all-cohorts`, `/api/provider/cohort-students/{id}`, `/api/provider/reports/*`, `/api/provider/reviews` |
+| Provider | `/api/provider/onboarding`, `/api/provider/profile`, `/api/provider/kyc/documents`, `/api/provider/payments`, `/api/provider/all-cohorts`, `/api/provider/cohort-students/{id}`, `/api/provider/reports/*`, `/api/provider/reviews` |
 | Courses & cohorts | `/api/courses` (apiResource), `POST /api/courses/{id}` (multipart), `/api/courses/{id}/cohorts*`, `/api/courses/{id}/notes`, `/announcements`, `/tools`, `/submit-all` |
 | Admin | `/api/admin/stats`, `/api/admin/financials`, `/api/admin/all-payments`, `/api/admin/reports/summary`, `/api/admin/providers/*`, `/api/admin/courses/*` |
 
 Run `php artisan route:list` for the full list.
+
+### Provider KYC documents
+
+Submit `brela_doc` and/or `tin_doc` as multipart file fields when calling
+`POST /api/provider/onboarding`, `POST /api/provider/profile/update`, or
+`POST /api/provider/kyc/documents`. Files must be PDF, JPG, JPEG, or PNG and
+must not exceed 10 MB. Existing documents are retained when a field is omitted.
+Documents are stored privately; providers can download them from
+`GET /api/provider/kyc/documents/{brela|tin}`, and administrators can download
+them from `GET /api/admin/providers/{id}/kyc/{brela|tin}`.
 
 ## 7. Deployment
 

@@ -20,6 +20,20 @@ class AdminProviderController extends Controller
     {
         try {
             $providers = Provider::with('user')->get();
+            $providers->each(function (Provider $provider) {
+                $provider->setAttribute(
+                    'kyc_documents',
+                    [
+                        'brela' => $provider->brela_doc
+                            ? route('admin.provider.kyc.documents.download', [$provider->id, 'brela'])
+                            : null,
+                        'tin' => $provider->tin_doc
+                            ? route('admin.provider.kyc.documents.download', [$provider->id, 'tin'])
+                            : null,
+                    ]
+                );
+            });
+
             return response()->json($providers, 200);
         } catch (\Exception $e) {
             Log::error("Fetch Providers Error: " . $e->getMessage());

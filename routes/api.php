@@ -19,6 +19,7 @@ use App\Http\Controllers\{
     PasswordResetController,
     PaymentController,
     ProviderOnboardingController,
+    ProviderKycController,
     ProviderProfileController,
     ProviderReportController,
     ProviderSettingsController,
@@ -85,6 +86,9 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/notifications/count', [AdminNotificationController::class, 'getCount']);
 
         Route::get('/providers', [AdminProviderController::class, 'index']);
+        Route::get('/providers/{id}/kyc/{document}', [ProviderKycController::class, 'downloadForAdmin'])
+            ->whereIn('document', ['brela', 'tin'])
+            ->name('admin.provider.kyc.documents.download');
         Route::post('/providers/{id}/approve', [AdminProviderController::class, 'approveStatus']);
         Route::post('/providers/{id}/suspend', [AdminProviderController::class, 'suspendStatus']);
         Route::post('/providers/{id}/reject', [AdminProviderController::class, 'rejectStatus']);
@@ -103,7 +107,12 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::prefix('provider')->group(function () {
         Route::get('/profile', [ProviderProfileController::class, 'index']);
         Route::put('/profile/update', [ProviderProfileController::class, 'update']);
+        Route::post('/profile/update', [ProviderProfileController::class, 'update']);
         Route::post('/onboarding', [ProviderOnboardingController::class, 'store']);
+        Route::post('/kyc/documents', [ProviderKycController::class, 'update']);
+        Route::get('/kyc/documents/{document}', [ProviderKycController::class, 'downloadForProvider'])
+            ->whereIn('document', ['brela', 'tin'])
+            ->name('provider.kyc.documents.download');
         Route::get('/payments', [EnrollmentController::class, 'providerPayments']);
         Route::post('/payments/{id}/status', [EnrollmentController::class, 'providerUpdatePaymentStatus'])
             ->whereNumber('id');
