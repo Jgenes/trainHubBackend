@@ -89,9 +89,9 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/providers/{id}/kyc/{document}', [ProviderKycController::class, 'downloadForAdmin'])
             ->whereIn('document', ['brela', 'tin'])
             ->name('admin.provider.kyc.documents.download');
-        Route::post('/providers/{id}/approve', [AdminProviderController::class, 'approveStatus']);
-        Route::post('/providers/{id}/suspend', [AdminProviderController::class, 'suspendStatus']);
-        Route::post('/providers/{id}/reject', [AdminProviderController::class, 'rejectStatus']);
+        Route::post('/api/providers/{id}/approve', [AdminProviderController::class, 'approveStatus']);
+        Route::post('/api/providers/{id}/suspend', [AdminProviderController::class, 'suspendStatus']);
+        Route::post('/api/providers/{id}/reject', [AdminProviderController::class, 'rejectStatus']);
 
         Route::get('/courses', [AdminCourseController::class, 'index']);
         Route::post('/courses/{id}/approve', [AdminCourseController::class, 'approveCourse']);
