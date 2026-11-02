@@ -104,7 +104,8 @@ class ProviderOnboardingController extends Controller
         $target = public_path('uploads/providers');
         File::ensureDirectoryExists($target);
 
-        $name = Str::random(20).'.'.$file->getClientOriginalExtension();
+        $extension = $file->getClientOriginalExtension() ?: $file->guessExtension() ?: 'bin';
+        $name = Str::random(20).'.'.$extension;
         $file->move($target, $name);
 
         return 'uploads/providers/'.$name;
