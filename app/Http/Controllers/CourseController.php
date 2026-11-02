@@ -23,7 +23,7 @@ class CourseController extends Controller
         );
     }
 
-    /** Published courses for the public catalogue. */
+    /** Publicly visible courses for the public catalogue. */
     public function publicIndex()
     {
         $courses = Course::published()

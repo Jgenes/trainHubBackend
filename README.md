@@ -152,7 +152,8 @@ as a release step.
 
 * Course status is stored as `Draft` / `Published` / `Closed`; admin endpoints
   accept `PUBLISHED` / `DRAFT` and normalise them, so approved courses appear
-  in the public catalogue immediately.
+  in the public catalogue immediately. Draft and legacy non-withdrawn statuses
+  are also public — see **§11 Troubleshooting an empty public catalogue**.
 * A successful payment automatically creates an `enrollment` (payment observer).
 * `2026_10_27_000001_repair_schema` adds columns that the original stub
   migrations never created (invoices, receipts, disputes, payment extras,
@@ -372,3 +373,52 @@ DNS records (SPF/DKIM) before they accept it, which also fixes §10.2.3.
 failed`, with an extra `hint` field translating the SMTP error. If those lines
 are absent the message *was* handed to the mail server — check the spam folder
 and the mail server's own logs (cPanel → *Track Delivery*).
+
+## 11. Troubleshooting an empty public catalogue
+
+The React app logs this warning when its two catalogue requests both return an
+empty list:
+
+```text
+Catalogue returned no public courses (2) [{…}, {…}]
+```
+
+The two objects are `fetchCourses()`' attempts for `GET /api/public-courses`
+and `GET /api/training`, each with `reason: "empty"`. It is **not** a JavaScript
+exception, a CORS failure or a 500: both requests reached Laravel and answered
+`200 []`.
+
+`Course::scopePublished()` is a case-insensitive deny-list: `Published`,
+`Draft`, `null` and legacy labels such as `APPROVED`, `ACTIVE` or `PENDING` are
+public; only closed/suspended/rejected/archived/deleted/unpublished/inactive/
+disabled records are hidden. The SPA uses the same rule. New provider courses
+are `Draft`, so hiding drafts empties the catalogue.
+
+### Check the deployed build and the data
+
+```bash
+curl -s https://api-host/api/catalogue-health | jq
+```
+
+| Response | Meaning / action |
+| --- | --- |
+| 404, HTML, or no `code: "public-scope-v2"` | The API host is running an older/different build. Deploy this branch, then run `php artisan optimize:clear && php artisan config:cache && php artisan route:cache` and restart PHP/Apache. |
+| `total_courses: 0` | The `courses` table is genuinely empty. Create a course in the provider workspace, or seed real data. No backend code can invent missing rows. |
+| `total_courses > 0`, `public_courses: 0` | Every row has a withdrawn status. Inspect `status_counts`; the `2026_11_02_000001_normalize_course_statuses` migration canonicalises legacy values, or update the intended rows to `Published`/`Draft`. |
+| `public_courses > 0` but the SPA still warns | The SPA is pointed at another API host, is serving a cached bundle, or its 60-second catalogue cache has not expired. Check `VITE_API_BASE_URL` and hard-reload. |
+
+Also verify the two list endpoints directly:
+
+```bash
+curl -s https://api-host/api/public-courses | jq 'length'
+curl -s https://api-host/api/training      | jq 'length'
+```
+
+After deploying, run `php artisan migrate --force` once. The migration converts
+the old `status` enum to a string and rewrites historical status spellings to
+`Draft` / `Published` / `Closed`; it is idempotent and safe on an existing
+database. It does **not** create sample courses.
+
+`GET /api/top-providers` also selects the provider `user_id` needed by
+`Provider::courses()` before hiding it from the response, so `courses_count`
+reflects the same public scope instead of always returning zero.

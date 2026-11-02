@@ -40,6 +40,10 @@ Route::get('/public-courses', [CourseController::class, 'publicIndex']);
 Route::get('/public-reviews', [ReviewController::class, 'publicReviews']);
 Route::get('/top-providers', [PublicController::class, 'topProviders']);
 
+// Empty-catalogue canary: reports course/status counts and the public-scope
+// build marker. See "Troubleshooting an empty public catalogue" in the README.
+Route::get('/catalogue-health', [PublicController::class, 'catalogueHealth']);
+
 // CORS canary: confirms the request actually reached Laravel. See
 // PublicController::corsCheck() and "Troubleshooting CORS" in the README.
 Route::get('/cors-check', [PublicController::class, 'corsCheck']);

@@ -18,7 +18,8 @@ class TrainingController extends Controller
             // 1. Pata ID ya user kwa usalama
             $userId = Auth::guard('sanctum')->id();
 
-            // 2. Query kozi ambazo ni Published pekee
+            // 2. Kozi zinazoruhusiwa kwenye catalogue ya umma
+            //    (Published, Draft na status za zamani zisizofichwa).
             $query = Course::published()
                 ->with([
                     'provider:id,name', 
