@@ -111,6 +111,8 @@ class ApiSmokeTest extends TestCase
         $this->getJson('/api/public-courses')->assertOk()->assertJsonIsArray();
         $this->getJson('/api/public-reviews')->assertOk()->assertJsonIsArray();
         $this->getJson('/api/top-providers')->assertOk()->assertJsonIsArray();
+        $this->getJson('/api/catalogue-health')->assertOk()
+            ->assertJsonPath('code', 'public-scope-v2');
         $this->getJson('/api/qr-code/hello')->assertOk()->assertJsonStructure(['qr_code']);
     }
 
