@@ -44,7 +44,7 @@ class PublicController extends Controller
     {
         $providers = Provider::query()
             ->where('status', 'APPROVED')
-            ->withCount(['courses' => fn ($q) => $q->where('status', 'Published')])
+            ->withCount(['courses' => fn ($q) => $q->published()])
             ->orderByDesc('courses_count')
             ->limit(12)
             ->get(['id', 'legal_name', 'brand_name', 'provider_slug', 'region', 'country', 'status']);

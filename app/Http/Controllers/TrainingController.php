@@ -19,7 +19,7 @@ class TrainingController extends Controller
             $userId = Auth::guard('sanctum')->id();
 
             // 2. Query kozi ambazo ni Published pekee
-            $query = Course::where('status', 'Published')
+            $query = Course::published()
                 ->with([
                     'provider:id,name', 
                     'cohorts'
@@ -78,7 +78,7 @@ class TrainingController extends Controller
             $course = Course::with([
                 'provider:id,name',
                 'cohorts'
-            ])->where('status', 'Published')->find($id);
+            ])->published()->find($id);
 
             if (!$course) {
                 return response()->json(['message' => 'Course not found'], 404);

@@ -39,7 +39,7 @@ class Course extends Model
 
     public function scopePublished(Builder $query): Builder
     {
-        return $query->where('status', 'Published');
+        return $query->whereIn('status', ['Published', 'Draft']);
     }
 
     public function provider()
