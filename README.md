@@ -394,6 +394,14 @@ public; only closed/suspended/rejected/archived/deleted/unpublished/inactive/
 disabled records are hidden. The SPA uses the same rule. New provider courses
 are `Draft`, so hiding drafts empties the catalogue.
 
+For deployments that already contain courses, the public list and detail
+endpoints share `App\Support\CatalogueCourses`. If **zero** courses match the
+public scope, the production default `CATALOGUE_INCLUDE_HIDDEN_WHEN_EMPTY=true`
+returns the existing non-deleted courses instead and marks each with
+`catalogue_fallback: true`. It never replaces a catalogue that already has
+visible courses. Set the variable to `false` for strict moderation; the test
+suite does this in `phpunit.xml`.
+
 ### Check the deployed build and the data
 
 ```bash

@@ -85,6 +85,7 @@ class PublicController extends Controller
             'code'               => 'public-scope-v2',
             'request_host'       => request()->getHost(),
             'database_driver'    => DB::connection()->getDriverName(),
+            'recovery_fallback'  => (bool) config('catalogue.include_hidden_when_empty', true),
             'total_courses'      => $total,
             'public_courses'     => $public,
             'hidden_courses'     => max(0, $total - $public),

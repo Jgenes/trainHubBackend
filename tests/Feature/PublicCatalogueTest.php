@@ -96,6 +96,7 @@ class PublicCatalogueTest extends TestCase
             ->assertOk()
             ->assertJsonPath('code', 'public-scope-v2')
             ->assertJsonPath('ok', true)
+            ->assertJsonPath('recovery_fallback', false)
             ->assertJsonPath('total_courses', 4)
             ->assertJsonPath('public_courses', 3)
             ->assertJsonPath('hidden_courses', 1);
@@ -124,6 +125,39 @@ class PublicCatalogueTest extends TestCase
                 'hint',
                 'Courses exist, but all of them have a hidden/withdrawn status. Normalise or publish their statuses.'
             );
+    }
+
+    public function test_existing_course_is_displayed_by_recovery_fallback(): void
+    {
+        config()->set('catalogue.include_hidden_when_empty', true);
+
+        $course = $this->course(
+            $this->providerUser(),
+            'Closed',
+            'Existing course with a withdrawn status'
+        );
+
+        foreach (['/api/public-courses', '/api/training'] as $endpoint) {
+            $this->getJson($endpoint)
+                ->assertOk()
+                ->assertJsonCount(1)
+                ->assertJsonPath('0.id', $course->id)
+                ->assertJsonPath('0.title', 'Existing course with a withdrawn status')
+                ->assertJsonPath('0.catalogue_fallback', true);
+        }
+
+        $this->getJson('/api/training/'.$course->id)
+            ->assertOk()
+            ->assertJsonPath('id', $course->id)
+            ->assertJsonPath('catalogue_fallback', true);
+    }
+
+    public function test_recovery_fallback_is_disabled_by_default_in_tests(): void
+    {
+        $this->course($this->providerUser(), 'Closed', 'Strictly hidden course');
+
+        $this->getJson('/api/public-courses')->assertOk()->assertJsonCount(0);
+        $this->getJson('/api/training')->assertOk()->assertJsonCount(0);
     }
 
     public function test_status_migration_canonicalises_legacy_rows(): void

@@ -3,10 +3,8 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
-use App\Models\Course;
-use App\Models\Enrollment; 
-use App\Models\Cohort;
 use App\Models\Payment; 
+use App\Support\CatalogueCourses;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
 
@@ -18,19 +16,12 @@ class TrainingController extends Controller
             // 1. Pata ID ya user kwa usalama
             $userId = Auth::guard('sanctum')->id();
 
-            // 2. Kozi zinazoruhusiwa kwenye catalogue ya umma
-            //    (Published, Draft na status za zamani zisizofichwa).
-            $query = Course::published()
-                ->with([
-                    'provider:id,name', 
-                    'cohorts'
-                ]);
-
-            if ($request->filled('name')) {
-                $query->where('title', 'like', '%' . $request->name . '%');
-            }
-
-            $courses = $query->get();
+            // 2. Kozi zinazoruhusiwa kwenye catalogue ya umma. Ikiwa hakuna
+            //    hata moja inayolingana, CatalogueCourses hurejesha kozi
+            //    zilizopo badala ya orodha tupu.
+            $courses = CatalogueCourses::get(
+                $request->filled('name') ? (string) $request->name : null
+            );
 
             // 3. Transform data (Hapa ndipo palikuwa na error)
             $courses->transform(function ($course) use ($userId) {
@@ -76,10 +67,7 @@ class TrainingController extends Controller
     public function show($id)
     {
         try {
-            $course = Course::with([
-                'provider:id,name',
-                'cohorts'
-            ])->published()->find($id);
+            $course = CatalogueCourses::find($id);
 
             if (!$course) {
                 return response()->json(['message' => 'Course not found'], 404);

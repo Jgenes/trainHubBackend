@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Announcement;
 use App\Models\Course;
 use App\Models\Question;
+use App\Support\CatalogueCourses;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Auth;
@@ -26,16 +27,7 @@ class CourseController extends Controller
     /** Publicly visible courses for the public catalogue. */
     public function publicIndex()
     {
-        $courses = Course::published()
-            ->with([
-                'provider:id,name',
-                'cohorts' => fn ($q) => $q->where('status', 'OPEN'),
-            ])
-            ->withCount('enrollments')
-            ->latest()
-            ->get();
-
-        return response()->json($courses);
+        return response()->json(CatalogueCourses::get());
     }
 
     public function store(Request $request)

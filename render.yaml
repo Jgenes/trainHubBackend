@@ -20,6 +20,8 @@ services:
         value: https://traininghubtz.co.tz,https://www.traininghubtz.co.tz,http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000
       - key: CORS_SUPPORTS_CREDENTIALS
         value: "true"
+      - key: CATALOGUE_INCLUDE_HIDDEN_WHEN_EMPTY
+        value: "true"
       - key: SANCTUM_STATEFUL_DOMAINS
         value: traininghubtz.co.tz,www.traininghubtz.co.tz,localhost:5173,127.0.0.1:5173,localhost:3000
       - key: DB_CONNECTION
