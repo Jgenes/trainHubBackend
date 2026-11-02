@@ -185,6 +185,31 @@ class ApiSmokeTest extends TestCase
             ->assertJsonStructure(['totalUsers', 'totalProviders', 'totalCourses', 'totalRevenue', 'revenueChart']);
     }
 
+    public function test_admin_can_approve_provider(): void
+    {
+        Mail::fake();
+
+        $providerUser = $this->user('tenant', ['is_verified' => false]);
+        $this->withHeaders($this->auth($providerUser))->postJson('/api/provider/onboarding', [
+            'legal_name'    => 'Approval Training Ltd',
+            'provider_type' => 'Private',
+            'region'        => 'Dar es Salaam',
+            'contact_name'  => 'Jane Doe',
+            'contact_phone' => '0712345678',
+        ])->assertCreated();
+
+        $provider = Provider::where('user_id', $providerUser->id)->firstOrFail();
+        $admin = $this->user('admin');
+
+        $this->withHeaders($this->auth($admin))
+            ->postJson('/api/admin/providers/'.$provider->id.'/approve')
+            ->assertOk()
+            ->assertJsonPath('provider_id', $provider->id);
+
+        $this->assertSame('APPROVED', $provider->fresh()->status);
+        $this->assertTrue((bool) $providerUser->fresh()->is_verified);
+    }
+
     public function test_provider_kyc_documents_upload_onboarding_and_profile_and_download_privately(): void
     {
         Storage::fake('local');
