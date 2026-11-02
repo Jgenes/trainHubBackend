@@ -83,6 +83,8 @@ class PublicController extends Controller
         return response()->json([
             'ok'                 => $public > 0,
             'code'               => 'public-scope-v2',
+            'request_host'       => request()->getHost(),
+            'database_driver'    => DB::connection()->getDriverName(),
             'total_courses'      => $total,
             'public_courses'     => $public,
             'hidden_courses'     => max(0, $total - $public),

@@ -403,9 +403,26 @@ curl -s https://api-host/api/catalogue-health | jq
 | Response | Meaning / action |
 | --- | --- |
 | 404, HTML, or no `code: "public-scope-v2"` | The API host is running an older/different build. Deploy this branch, then run `php artisan optimize:clear && php artisan config:cache && php artisan route:cache` and restart PHP/Apache. |
+| `request_host` is not the host you deployed | DNS or `VITE_API_BASE_URL` still points at another server. This repository's DNS notes place `api.traininghubtz.co.tz` on a cPanel IP, while `render.yaml` describes a separate Render service; deploying Render without repointing DNS leaves the SPA talking to the old cPanel API. |
 | `total_courses: 0` | The `courses` table is genuinely empty. Create a course in the provider workspace, or seed real data. No backend code can invent missing rows. |
 | `total_courses > 0`, `public_courses: 0` | Every row has a withdrawn status. Inspect `status_counts`; the `2026_11_02_000001_normalize_course_statuses` migration canonicalises legacy values, or update the intended rows to `Published`/`Draft`. |
 | `public_courses > 0` but the SPA still warns | The SPA is pointed at another API host, is serving a cached bundle, or its 60-second catalogue cache has not expired. Check `VITE_API_BASE_URL` and hard-reload. |
+
+If the course is visible in a database client but the API reports zero rows,
+confirm that client and the API use the same database, and inspect the exact
+status values:
+
+```sql
+SELECT DATABASE();
+SELECT id, title, status, provider_id, created_at
+FROM courses
+ORDER BY id DESC
+LIMIT 20;
+```
+
+A course with `Closed`, `Suspended`, `Rejected`, `Archived`, `Deleted`,
+`Unpublished`, `Inactive` or `Disabled` is intentionally hidden. Publish it
+with `UPDATE courses SET status = 'Published' WHERE id = <course id>;`.
 
 Also verify the two list endpoints directly:
 
