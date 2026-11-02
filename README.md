@@ -126,6 +126,12 @@ them from `GET /api/admin/providers/{id}/kyc/{brela|tin}`.
 
 A production `Dockerfile` (PHP 8.3 + Apache) is included. `render.yaml` uses
 `runtime: docker`, because Render has no native PHP runtime.
+For non-Docker PHP-FPM/CGI hosting, `public/.user.ini` sets PHP's upload limit
+to 12 MB per file and 25 MB per request, matching provider KYC validation.
+Some hosts disable per-directory PHP settings; if uploads still fail, set
+`upload_max_filesize` to at least `12M` and `post_max_size` to at least `25M`
+in the hosting control panel, then restart PHP or wait for its user-ini cache
+to refresh. The Docker image has equivalent settings.
 
 ```bash
 docker build -t trainhub-api .
