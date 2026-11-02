@@ -108,7 +108,7 @@ If OTP codes never arrive, jump to **§10 Troubleshooting email / OTP delivery**
 | Payments | `/api/payment/send-otp`, `/api/payment/verify-otp`, `/api/payment/initiate`, `/api/pesapal/callback`, `/api/download-document/{reference}`, `/api/qr-code/{data}` |
 | Provider | `/api/provider/onboarding`, `/api/provider/profile`, `/api/provider/kyc/documents`, `/api/provider/payments`, `/api/provider/all-cohorts`, `/api/provider/cohort-students/{id}`, `/api/provider/reports/*`, `/api/provider/reviews` |
 | Courses & cohorts | `/api/courses` (apiResource), `POST /api/courses/{id}` (multipart), `/api/courses/{id}/cohorts*`, `/api/courses/{id}/notes`, `/announcements`, `/tools`, `/submit-all` |
-| Admin | `/api/admin/stats`, `/api/admin/financials`, `/api/admin/all-payments`, `/api/admin/reports/summary`, `/api/admin/providers/*` (including `POST /{id}/approve`, `POST /{id}/suspend`, and `POST /{id}/reject`), `/api/admin/courses/*` |
+| Admin | `/api/admin/stats`, `/api/admin/financials`, `/api/admin/all-payments`, `/api/admin/reports/summary`, `/api/admin/providers/*` (including `POST /{id}/approve`, `POST /{id}/suspend`, and `POST /{id}/reject`); the provider action routes are also available at `/api/providers/{id}/{approve|suspend|reject}` for the admin UI; `/api/admin/courses/*` |
 
 Run `php artisan route:list` for the full list.
 

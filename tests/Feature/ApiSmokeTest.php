@@ -202,7 +202,7 @@ class ApiSmokeTest extends TestCase
         $admin = $this->user('admin');
 
         $this->withHeaders($this->auth($admin))
-            ->postJson('/api/admin/providers/'.$provider->id.'/approve')
+            ->postJson('/api/providers/'.$provider->id.'/approve')
             ->assertOk()
             ->assertJsonPath('provider_id', $provider->id);
 

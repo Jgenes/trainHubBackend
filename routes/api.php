@@ -103,6 +103,14 @@ Route::middleware('auth:sanctum')->group(function () {
         ->middleware('admin')
         ->whereNumber('id');
 
+    // Keep the admin UI's short provider-action paths available as well.
+    Route::post('/providers/{id}/approve', [AdminProviderController::class, 'approveStatus'])
+        ->middleware('admin');
+    Route::post('/providers/{id}/suspend', [AdminProviderController::class, 'suspendStatus'])
+        ->middleware('admin');
+    Route::post('/providers/{id}/reject', [AdminProviderController::class, 'rejectStatus'])
+        ->middleware('admin');
+
     // ----- Provider ------------------------------------------------------
     Route::prefix('provider')->group(function () {
         Route::get('/profile', [ProviderProfileController::class, 'index']);
