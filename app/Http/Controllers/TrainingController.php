@@ -2,9 +2,10 @@
 
 namespace App\Http\Controllers;
 
-use Illuminate\Http\Request;
-use App\Models\Payment; 
+use App\Models\Payment;
 use App\Support\CatalogueCourses;
+use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
 
@@ -23,14 +24,16 @@ class TrainingController extends Controller
                 $request->filled('name') ? (string) $request->name : null
             );
 
-            // 3. Transform data (Hapa ndipo palikuwa na error)
-            $courses->transform(function ($course) use ($userId) {
-                try {
-                    $course->is_enrolled = $this->hasPaidEnrollment($userId, $course->id);
-                } catch (\Exception $e) {
-                    Log::error("Payment Check Error: " . $e->getMessage());
-                    $course->is_enrolled = false;
-                }
+            // 3. Malipo ya user huyu, query moja kwa kozi zote.
+            $enrolments = $this->enrolmentMap($userId);
+
+            // 4. Transform data
+            $courses->transform(function ($course) use ($enrolments) {
+                $entry = $enrolments->get($course->id);
+
+                // is_enrolled ni true TU ikiwa PesaPal imethibitisha malipo.
+                $course->is_enrolled = (bool) ($entry['is_enrolled'] ?? false);
+                $course->enrolment_status = $entry['status'] ?? null;
 
                 // Hesabu za viti vya cohort
                 if ($course->cohorts) {
@@ -40,9 +43,9 @@ class TrainingController extends Controller
                         $cohort->remaining_seats = max(0, $capacity - $taken);
                     }
                 }
-                
+
                 return $course;
-            }); // Mabano yalifungwa hapa!
+            });
 
             return response()->json($courses);
 
@@ -65,10 +68,10 @@ class TrainingController extends Controller
                 return response()->json(['message' => 'Course not found'], 404);
             }
 
-            $course->is_enrolled = $this->hasPaidEnrollment(
-                Auth::guard('sanctum')->id(),
-                $course->id
-            );
+            $entry = $this->enrolmentMap(Auth::guard('sanctum')->id())->get($course->id);
+
+            $course->is_enrolled = (bool) ($entry['is_enrolled'] ?? false);
+            $course->enrolment_status = $entry['status'] ?? null;
 
             // Handle JSON contents
             if (is_string($course->contents)) {
@@ -91,11 +94,29 @@ class TrainingController extends Controller
         }
     }
 
-    private function hasPaidEnrollment($userId, $courseId): bool
+    /**
+     * Payment status per course for one learner, keyed by course id.
+     *
+     * is_enrolled comes from Payment::isVerifiedPaid(): a paid status AND the
+     * gateway's confirmation timestamp. A PENDING order — or any row that was
+     * written as COMPLETED without PesaPal confirming it — stays false, so the
+     * catalogue keeps showing "Enrol now → checkout".
+     *
+     * @return Collection<int|string, array{is_enrolled: bool, status: string|null}>
+     */
+    private function enrolmentMap(int|string|null $userId): Collection
     {
-        return $userId !== null && Payment::where('user_id', $userId)
-            ->where('course_id', $courseId)
-            ->whereIn('status', ['COMPLETED', 'PAID', 'SUCCESS'])
-            ->exists();
+        if ($userId === null || $userId === '') {
+            return collect();
+        }
+
+        return Payment::where('user_id', $userId)
+            ->orderBy('id')
+            ->get(['id', 'course_id', 'status', 'verified_at'])
+            ->groupBy('course_id')
+            ->map(fn (Collection $payments) => [
+                'is_enrolled' => $payments->contains(fn (Payment $payment) => $payment->isVerifiedPaid()),
+                'status'      => strtoupper((string) $payments->last()->status),
+            ]);
     }
 }

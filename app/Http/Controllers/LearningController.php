@@ -13,8 +13,9 @@ class LearningController extends Controller
     /** Courses the signed-in learner has paid for. */
     public function myCourses()
     {
+        // Only gateway-confirmed payments unlock learning.
         $payments = Payment::where('user_id', Auth::id())
-            ->whereIn('status', ['COMPLETED', 'PAID', 'SUCCESS'])
+            ->verifiedPaid()
             ->with(['course', 'cohort'])
             ->latest()
             ->get();
@@ -27,10 +28,7 @@ class LearningController extends Controller
     {
         $userId = Auth::id();
 
-        $paid = Payment::where('user_id', $userId)
-            ->where('course_id', $id)
-            ->whereIn('status', ['COMPLETED', 'PAID', 'SUCCESS'])
-            ->exists();
+        $paid = Payment::hasCourseAccess($userId, $id);
 
         if (! $paid) {
             return response()->json(['message' => 'Access denied. Please pay first.'], 403);
@@ -83,7 +81,7 @@ class LearningController extends Controller
 
         if (! $courseId) {
             $courseId = Payment::where('user_id', Auth::id())
-                ->whereIn('status', ['COMPLETED', 'PAID', 'SUCCESS'])
+                ->verifiedPaid()
                 ->latest()
                 ->value('course_id');
         }
@@ -103,10 +101,7 @@ class LearningController extends Controller
             return response()->json(['message' => 'course_id and lesson_id are required.'], 422);
         }
 
-        $paid = Payment::where('user_id', Auth::id())
-            ->where('course_id', $courseId)
-            ->whereIn('status', ['COMPLETED', 'PAID', 'SUCCESS'])
-            ->exists();
+        $paid = Payment::hasCourseAccess(Auth::id(), $courseId);
 
         if (! $paid) {
             return response()->json(['message' => 'Access denied. Please pay first.'], 403);
