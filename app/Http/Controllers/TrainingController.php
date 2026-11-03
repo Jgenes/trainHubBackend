@@ -25,19 +25,11 @@ class TrainingController extends Controller
 
             // 3. Transform data (Hapa ndipo palikuwa na error)
             $courses->transform(function ($course) use ($userId) {
-                $course->is_enrolled = false;
-
-                // Check kama user amelipia/amejisajili
-                if ($userId) {
-                    try {
-                        $course->is_enrolled = Payment::where('user_id', $userId)
-                            ->where('course_id', $course->id)
-                            ->whereIn('status', ['COMPLETED', 'PAID', 'SUCCESS']) 
-                            ->exists();
-                    } catch (\Exception $e) {
-                        Log::error("Payment Check Error: " . $e->getMessage());
-                        $course->is_enrolled = false; 
-                    }
+                try {
+                    $course->is_enrolled = $this->hasPaidEnrollment($userId, $course->id);
+                } catch (\Exception $e) {
+                    Log::error("Payment Check Error: " . $e->getMessage());
+                    $course->is_enrolled = false;
                 }
 
                 // Hesabu za viti vya cohort
@@ -73,6 +65,11 @@ class TrainingController extends Controller
                 return response()->json(['message' => 'Course not found'], 404);
             }
 
+            $course->is_enrolled = $this->hasPaidEnrollment(
+                Auth::guard('sanctum')->id(),
+                $course->id
+            );
+
             // Handle JSON contents
             if (is_string($course->contents)) {
                 $course->contents = json_decode($course->contents, true) ?: [];
@@ -92,5 +89,13 @@ class TrainingController extends Controller
             Log::error("Training Controller Show Error: " . $e->getMessage());
             return response()->json(['error' => $e->getMessage()], 500);
         }
+    }
+
+    private function hasPaidEnrollment($userId, $courseId): bool
+    {
+        return $userId !== null && Payment::where('user_id', $userId)
+            ->where('course_id', $courseId)
+            ->whereIn('status', ['COMPLETED', 'PAID', 'SUCCESS'])
+            ->exists();
     }
 }

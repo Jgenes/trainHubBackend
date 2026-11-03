@@ -116,6 +116,35 @@ class ApiSmokeTest extends TestCase
         $this->getJson('/api/qr-code/hello')->assertOk()->assertJsonStructure(['qr_code']);
     }
 
+    public function test_training_endpoints_report_paid_enrollment_for_redirect_decision(): void
+    {
+        $provider = $this->user('tenant');
+        $paidStudent = $this->user('user');
+        $unpaidStudent = $this->user('user');
+        $course = $this->course($provider);
+        $this->paidPayment($paidStudent, $course);
+
+        $this->withHeaders($this->auth($paidStudent))
+            ->getJson('/api/training')
+            ->assertOk()
+            ->assertJsonPath('0.is_enrolled', true);
+
+        $this->withHeaders($this->auth($paidStudent))
+            ->getJson("/api/training/{$course->id}")
+            ->assertOk()
+            ->assertJsonPath('is_enrolled', true);
+
+        $this->withHeaders($this->auth($unpaidStudent))
+            ->getJson('/api/training')
+            ->assertOk()
+            ->assertJsonPath('0.is_enrolled', false);
+
+        $this->withHeaders($this->auth($unpaidStudent))
+            ->getJson("/api/training/{$course->id}")
+            ->assertOk()
+            ->assertJsonPath('is_enrolled', false);
+    }
+
     public function test_registration_activation_login_and_me(): void
     {
         Mail::fake();
