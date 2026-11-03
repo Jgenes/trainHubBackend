@@ -18,6 +18,10 @@ use Tests\TestCase;
 
 class ApiSmokeTest extends TestCase
 {
+    private ?string $gatewayDescription = null;
+    private ?int $gatewayStatusCode = null;
+    private bool $gatewayFaked = false;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -88,6 +92,56 @@ class ApiSmokeTest extends TestCase
             'amount'       => 100000,
             'currency'     => 'TZS',
             'status'       => 'COMPLETED',
+            // Only the PesaPal callback / PaymentVerifier writes this.
+            'verified_at'  => now(),
+        ]);
+    }
+
+    /** An order the learner started but has not paid. */
+    private function pendingPayment(User $student, Course $course, ?string $trackingId = 'tracking-pending'): Payment
+    {
+        return Payment::create([
+            'reference'    => 'TRH-'.Str::random(8),
+            'user_id'      => $student->id,
+            'course_id'    => $course->id,
+            'first_name'   => 'Test',
+            'last_name'    => 'Student',
+            'email'        => $student->email,
+            'phone_number' => $student->phone,
+            'amount'       => 100000,
+            'currency'     => 'TZS',
+            'status'       => 'PENDING',
+            'tracking_id'  => $trackingId,
+        ]);
+    }
+
+    /**
+     * PesaPal's answer for GetTransactionStatus.
+     *
+     * The stub is registered once and reads these properties, so a test can
+     * flip the gateway from "Pending" to "Completed" mid-flight the way a real
+     * IPN does.
+     */
+    private function fakeGatewayStatus(?string $description, ?int $statusCode = null): void
+    {
+        $this->gatewayDescription = $description;
+        $this->gatewayStatusCode  = $statusCode;
+
+        config()->set('services.pesapal.key', 'test-key');
+        config()->set('services.pesapal.secret', 'test-secret');
+
+        if ($this->gatewayFaked) {
+            return;
+        }
+
+        $this->gatewayFaked = true;
+
+        Http::fake([
+            '*/api/Auth/RequestToken'                  => Http::response(['token' => 'test-token']),
+            '*/api/Transactions/GetTransactionStatus*' => fn () => Http::response(array_filter([
+                'payment_status_description' => $this->gatewayDescription,
+                'status_code'                => $this->gatewayStatusCode,
+            ], fn ($value) => $value !== null)),
         ]);
     }
 
@@ -445,6 +499,181 @@ class ApiSmokeTest extends TestCase
         $this->assertDatabaseHas('payments', ['id' => $payment->id, 'status' => 'COMPLETED']);
         $this->assertDatabaseHas('receipts', ['payment_id' => $payment->id]);
         $this->assertDatabaseHas('enrollments', ['user_id' => $student->id, 'course_id' => $course->id]);
+        $this->assertNotNull($payment->fresh()->verified_at);
+
+        $this->withHeaders($this->auth($student))
+            ->getJson("/api/training/{$course->id}")
+            ->assertJsonPath('is_enrolled', true);
+    }
+
+    /**
+     * The reported bug: the catalogue answered `is_enrolled: true` before the
+     * payment was confirmed, so the frontend sent learners to "My learning"
+     * instead of checkout. A paid-looking row with no gateway verification must
+     * not unlock anything.
+     */
+    public function test_is_enrolled_requires_gateway_verified_payment(): void
+    {
+        $provider = $this->user('tenant');
+        $student  = $this->user('user');
+        $course   = $this->course($provider);
+
+        // A row flipped to COMPLETED by something other than PesaPal.
+        $unverified = Payment::create([
+            'reference'    => 'TRH-'.Str::random(8),
+            'user_id'      => $student->id,
+            'course_id'    => $course->id,
+            'first_name'   => 'Test',
+            'last_name'    => 'Student',
+            'email'        => $student->email,
+            'phone_number' => $student->phone,
+            'amount'       => 100000,
+            'currency'     => 'TZS',
+            'status'       => 'COMPLETED',
+        ]);
+
+        $headers = $this->auth($student);
+
+        $this->withHeaders($headers)->getJson('/api/training')
+            ->assertOk()
+            ->assertJsonPath('0.is_enrolled', false)
+            ->assertJsonPath('0.enrolment_status', 'COMPLETED');
+
+        $this->withHeaders($headers)->getJson("/api/training/{$course->id}")
+            ->assertOk()
+            ->assertJsonPath('is_enrolled', false);
+
+        // Nor may it unlock the course itself.
+        $this->withHeaders($headers)->getJson("/api/courses/{$course->id}/learning")->assertForbidden();
+        $this->withHeaders($headers)->getJson('/api/my-learning')->assertOk()->assertJsonCount(0);
+
+        // Nothing in the database may grant access either.
+        $this->assertNull($unverified->fresh()->verified_at);
+        $this->assertFalse($unverified->fresh()->grantsCourseAccess());
+        $this->assertDatabaseCount('enrollments', 0);
+
+        // Once the gateway confirms it, access follows immediately.
+        $unverified->update(['verified_at' => now()]);
+
+        $this->withHeaders($this->auth($student))->getJson('/api/training')
+            ->assertOk()
+            ->assertJsonPath('0.is_enrolled', true);
+    }
+
+    public function test_checkout_confirm_never_grants_access_without_the_gateway(): void
+    {
+        $provider = $this->user('tenant');
+        $student  = $this->user('user');
+        $course   = $this->course($provider);
+        $payment  = $this->pendingPayment($student, $course, 'tracking-checkout');
+        $headers  = $this->auth($student);
+
+        // Gateway still says the order is open.
+        $this->fakeGatewayStatus('Pending');
+
+        $this->withHeaders($headers)
+            ->postJson("/api/checkout/{$payment->id}/confirm")
+            ->assertStatus(409)
+            ->assertJsonPath('success', false);
+
+        $this->assertDatabaseHas('payments', ['id' => $payment->id, 'status' => 'PENDING']);
+        $this->assertDatabaseCount('enrollments', 0);
+        $this->withHeaders($headers)->getJson("/api/training/{$course->id}")
+            ->assertJsonPath('is_enrolled', false);
+
+        // Now the gateway confirms the money was received.
+        $this->fakeGatewayStatus('Completed', 1);
+
+        $this->withHeaders($headers)
+            ->postJson("/api/checkout/{$payment->id}/confirm")
+            ->assertOk()
+            ->assertJsonPath('success', true);
+
+        $this->assertDatabaseHas('payments', ['id' => $payment->id, 'status' => 'COMPLETED']);
+        $this->assertNotNull($payment->fresh()->verified_at);
+        $this->assertDatabaseHas('enrollments', ['user_id' => $student->id, 'course_id' => $course->id]);
+    }
+
+    public function test_payment_webhook_cannot_escalate_status_by_itself(): void
+    {
+        Mail::fake();
+
+        $provider = $this->user('tenant');
+        $student  = $this->user('user');
+        $course   = $this->course($provider);
+        $payment  = $this->pendingPayment($student, $course, 'tracking-webhook');
+
+        $this->fakeGatewayStatus('Pending');
+
+        $this->postJson('/api/payment-callback', [
+            'reference' => $payment->reference,
+            'status'    => 'COMPLETED',
+        ])->assertStatus(409);
+
+        $this->assertDatabaseHas('payments', ['id' => $payment->id, 'status' => 'PENDING']);
+        $this->assertDatabaseCount('enrollments', 0);
+
+        $this->fakeGatewayStatus('Completed', 1);
+
+        $this->postJson('/api/payment-callback', [
+            'reference' => $payment->reference,
+            'status'    => 'COMPLETED',
+        ])->assertOk();
+
+        $this->assertDatabaseHas('payments', ['id' => $payment->id, 'status' => 'COMPLETED']);
+        $this->assertNotNull($payment->fresh()->verified_at);
+        $this->assertDatabaseHas('enrollments', ['user_id' => $student->id, 'course_id' => $course->id]);
+    }
+
+    public function test_failed_gateway_transaction_keeps_learner_out(): void
+    {
+        $provider = $this->user('tenant');
+        $student  = $this->user('user');
+        $course   = $this->course($provider);
+        $payment  = $this->pendingPayment($student, $course, 'tracking-failed');
+
+        $this->fakeGatewayStatus('Failed', 2);
+
+        $this->get('/api/pesapal/callback?OrderTrackingId=tracking-failed&OrderMerchantReference='.$payment->reference)
+            ->assertRedirect();
+
+        $this->assertDatabaseHas('payments', ['id' => $payment->id, 'status' => 'FAILED']);
+        $this->assertNull($payment->fresh()->verified_at);
+        $this->assertDatabaseCount('enrollments', 0);
+
+        $this->withHeaders($this->auth($student))->getJson("/api/training/{$course->id}")
+            ->assertJsonPath('is_enrolled', false);
+    }
+
+    public function test_payment_status_endpoint_reports_the_gateway_truth(): void
+    {
+        $provider = $this->user('tenant');
+        $student  = $this->user('user');
+        $course   = $this->course($provider);
+        $payment  = $this->pendingPayment($student, $course, 'tracking-status');
+        $headers  = $this->auth($student);
+
+        $this->fakeGatewayStatus('Pending');
+
+        $this->withHeaders($headers)
+            ->getJson('/api/payment/status/'.$payment->reference)
+            ->assertOk()
+            ->assertJsonPath('status', 'PENDING')
+            ->assertJsonPath('is_enrolled', false);
+
+        $this->fakeGatewayStatus('Completed', 1);
+
+        $this->withHeaders($headers)
+            ->getJson('/api/payment/status/'.$payment->reference)
+            ->assertOk()
+            ->assertJsonPath('status', 'COMPLETED')
+            ->assertJsonPath('is_enrolled', true);
+
+        // Another learner must not be able to read this payment.
+        $stranger = $this->user('user');
+        $this->withHeaders($this->auth($stranger))
+            ->getJson('/api/payment/status/'.$payment->reference)
+            ->assertNotFound();
     }
 
     public function test_exports_documents_reviews_and_learning_progress(): void

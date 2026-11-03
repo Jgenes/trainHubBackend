@@ -2,18 +2,23 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\Enrollment;
 use App\Models\Payment;
+use App\Services\PaymentVerifier;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 /**
  * Legacy, non-PesaPal checkout used by the older React flow. It creates a
- * pending payment and lets the client confirm it after the user pays offline.
+ * pending payment; access is granted only once the gateway confirms it.
  */
 class CheckoutController extends Controller
 {
+    public function __construct(protected PaymentVerifier $verifier)
+    {
+    }
+
     public function store(Request $request)
     {
         $data = $request->validate([
@@ -52,29 +57,65 @@ class CheckoutController extends Controller
         ], 201);
     }
 
+    /**
+     * Finish a checkout.
+     *
+     * This endpoint must never grant access on its own: it used to write
+     * status = COMPLETED straight from the browser, so merely reaching this
+     * URL (for example right after clicking "Enrol") made the catalogue report
+     * `is_enrolled: true` while the payment was still unpaid — which is what
+     * sent learners to "My learning" instead of checkout. Now it only asks
+     * PesaPal to confirm the transaction and reports back.
+     */
     public function confirm($enrollmentId)
     {
         $payment = Payment::where('id', $enrollmentId)
             ->where('user_id', auth()->id())
             ->firstOrFail();
 
-        DB::transaction(function () use ($payment) {
-            $payment->update(['status' => 'COMPLETED']);
+        // Already settled: reply idempotently without touching the gateway.
+        if ($payment->isVerifiedPaid()) {
+            $payment->ensureEnrollment();
 
-            Enrollment::firstOrCreate(
-                [
-                    'user_id'   => $payment->user_id,
-                    'course_id' => $payment->course_id,
-                    'cohort_id' => $payment->cohort_id,
-                ],
-                [
-                    'status'      => 'PAID',
-                    'amount'      => $payment->amount,
-                    'provider_id' => $payment->course?->provider_id,
-                ]
-            );
-        });
+            return response()->json([
+                'success'     => true,
+                'is_enrolled' => true,
+                'message'     => 'Enrollment confirmed.',
+            ]);
+        }
 
-        return response()->json(['success' => true, 'message' => 'Enrollment confirmed.']);
+        $gatewayStatus = $this->verifier->settle($payment);
+
+        if ($gatewayStatus === null) {
+            return response()->json([
+                'success'     => false,
+                'is_enrolled' => false,
+                'status'      => strtoupper((string) $payment->fresh()->status),
+                'message'     => 'This payment cannot be confirmed yet. Access is granted automatically as soon as PesaPal confirms the transaction.',
+            ], 409);
+        }
+
+        $payment->refresh();
+
+        if (! $payment->isVerifiedPaid()) {
+            return response()->json([
+                'success'     => false,
+                'is_enrolled' => false,
+                'status'      => $gatewayStatus,
+                'message'     => 'PesaPal has not completed this transaction yet.',
+            ], 409);
+        }
+
+        try {
+            $payment->ensureEnrollment();
+        } catch (\Throwable $e) {
+            Log::error('Enrollment creation failed: '.$e->getMessage());
+        }
+
+        return response()->json([
+            'success'     => true,
+            'is_enrolled' => true,
+            'message'     => 'Enrollment confirmed.',
+        ]);
     }
 }

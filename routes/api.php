@@ -170,6 +170,11 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/initiate', [PaymentController::class, 'initiate']);
         Route::post('/send-otp', [PaymentController::class, 'sendOtp']);
         Route::post('/verify-otp', [PaymentController::class, 'verifyOtp']);
+
+        // Authoritative, gateway-checked status for one payment. Poll this
+        // after the PesaPal redirect instead of trusting the return URL.
+        Route::get('/status/{reference}', [PaymentController::class, 'status'])
+            ->where('reference', '[A-Za-z0-9\-]+');
     });
 
     Route::post('/checkout', [CheckoutController::class, 'store']);

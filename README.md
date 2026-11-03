@@ -105,7 +105,7 @@ If OTP codes never arrive, jump to **§10 Troubleshooting email / OTP delivery**
 | Public catalogue | `GET /api/training`, `/api/training/{id}`, `/api/public-courses`, `/api/public-reviews`, `/api/top-providers` |
 | Auth | `/api/register`, `/api/login`, `/api/verify-otp`, `/api/resend-otp`, `/api/forgot-password`, `/api/reset-password` |
 | Learner | `/api/my-learning`, `/api/my-enrollments`, `/api/my-payments`, `/api/courses/{id}/learning`, `/api/courses/{id}/complete-lesson`, `/api/reviews` |
-| Payments | `/api/payment/send-otp`, `/api/payment/verify-otp`, `/api/payment/initiate`, `/api/pesapal/callback`, `/api/download-document/{reference}`, `/api/qr-code/{data}` |
+| Payments | `/api/payment/send-otp`, `/api/payment/verify-otp`, `/api/payment/initiate`, `/api/payment/status/{reference}` (gateway-checked status), `/api/pesapal/callback`, `/api/download-document/{reference}`, `/api/qr-code/{data}` |
 | Provider | `/api/provider/onboarding`, `/api/provider/profile`, `/api/provider/kyc/documents`, `/api/provider/payments`, `/api/provider/all-cohorts`, `/api/provider/cohort-students/{id}`, `/api/provider/reports/*`, `/api/provider/reviews` |
 | Courses & cohorts | `/api/courses` (apiResource), `POST /api/courses/{id}` (multipart), `/api/courses/{id}/cohorts*`, `/api/courses/{id}/notes`, `/announcements`, `/tools`, `/submit-all` |
 | Admin | `/api/admin/stats`, `/api/admin/financials`, `/api/admin/all-payments`, `/api/admin/reports/summary`, `/api/admin/providers/*` (including `POST /{id}/approve`, `POST /{id}/suspend`, and `POST /{id}/reject`); the provider action routes are also available at `/api/providers/{id}/{approve|suspend|reject}` for the admin UI; `/api/admin/courses/*` |
@@ -154,7 +154,18 @@ as a release step.
   accept `PUBLISHED` / `DRAFT` and normalise them, so approved courses appear
   in the public catalogue immediately. Draft and legacy non-withdrawn statuses
   are also public — see **§11 Troubleshooting an empty public catalogue**.
-* A successful payment automatically creates an `enrollment` (payment observer).
+* Course access is driven by `payments`, never by the client: a learner is
+  enrolled only when a payment has a paid status **and** a `verified_at`
+  timestamp. That timestamp is written exclusively by `PaymentVerifier`, which
+  applies PesaPal's own answer (`GetTransactionStatus`) — or, for offline
+  payments, by a provider confirming the payment in their dashboard. A row that
+  says `COMPLETED` without `verified_at` is treated as unpaid, so
+  `GET /api/training` keeps returning `is_enrolled: false` and the frontend
+  keeps offering checkout. See **§12**.
+* A confirmed payment automatically creates an `enrollment` (payment observer).
+* `POST /api/checkout/{id}/confirm` and `POST /api/payment-callback` no longer
+  accept a status from the caller; they re-read the gateway and answer `409`
+  when PesaPal has not settled the transaction.
 * `2026_10_27_000001_repair_schema` adds columns that the original stub
   migrations never created (invoices, receipts, disputes, payment extras,
   lesson completions, password reset tokens). It is guarded by
@@ -447,3 +458,88 @@ database. It does **not** create sample courses.
 `GET /api/top-providers` also selects the provider `user_id` needed by
 `Provider::courses()` before hiding it from the response, so `courses_count`
 reflects the same public scope instead of always returning zero.
+
+## 12. Troubleshooting "Enrol now" opening My learning
+
+The rule the SPA follows is simple: `course.is_enrolled === true` →
+"Continue learning → My learning", otherwise → "Enrol now → checkout". So if
+clicking **Enrol now** lands on My learning, the API answered `is_enrolled:
+true` for a course the learner has not paid for.
+
+### How the backend decides
+
+`GET /api/training` and `GET /api/training/{id}` answer `is_enrolled: true` only
+when `Payment::hasCourseAccess()` finds a payment with **both**:
+
+* a paid status (`COMPLETED` / `PAID` / `SUCCESS`), and
+* a non-null `payments.verified_at` — the moment PesaPal confirmed the money.
+
+`PaymentVerifier` is the only writer of that timestamp, and it only writes it
+from PesaPal's `GetTransactionStatus` answer. The legacy paths that used to
+unlock a course from a browser request (checkout `confirm`, the internal
+`/api/payment-callback` webhook) now ask the gateway instead and return `409`
+while the order is unpaid, so a half-finished checkout can never flip
+`is_enrolled`.
+
+The same rule gates `/api/my-learning`, `/api/my-enrollments` and
+`/api/courses/{id}/learning` (403 until confirmed).
+
+### Diagnose a specific learner
+
+```bash
+# 1. Is there a confirmed payment for this user/course?
+sqlite3 database/database.sqlite "
+SELECT reference, status, verified_at, tracking_id, amount, created_at
+FROM payments WHERE user_id = <id> AND course_id = <course_id>
+ORDER BY id DESC;"
+```
+
+`verified_at` NULL with `status = 'PENDING'` means the payment was never
+completed. `verified_at` NULL with `status = 'COMPLETED'` is exactly the old
+bug: the row was flipped without the gateway, so it no longer grants access.
+
+The migration that added the column keeps existing access for payments that
+carry a receipt (proof the callback settled them) or that have no PesaPal
+`tracking_id` at all (offline/manual payments). A paid-looking row that has a
+tracking id but no receipt is treated as unverified, and the hourly reconcile
+job re-checks it with the gateway — a genuinely paid learner gets access back
+automatically, an unpaid one is finally sent to checkout.
+
+```bash
+# 2. What does PesaPal say right now? (repeat until it settles)
+php artisan payments:reconcile --reference=TRH-XXXXXXXXXXXX
+
+# 3. Or ask as the learner, from the SPA:
+curl -s -H "Authorization: Bearer <token>" \
+  https://api-host/api/payment/status/TRH-XXXXXXXXXXXX | jq
+```
+
+Both routes re-read the gateway and unlock the course immediately when it
+reports the transaction as completed. `payments:reconcile` also runs hourly
+(scheduled in `routes/console.php`) for every order from the last 7 days, so a
+lost IPN heals itself; the host needs the usual `php artisan schedule:run` cron
+entry and `PESAPAL_*` credentials.
+
+After deploying this change, run it once by hand so rows that were flagged paid
+before the fix are reconciled immediately:
+
+```bash
+php artisan migrate --force
+php artisan payments:reconcile --days=90
+```
+
+### If a learner is still wrong after that
+
+* **`verified_at` NULL on a genuinely paid row** — the transaction never
+  reached this database (different PesaPal account/environment, or
+  `tracking_id` empty). Find it in the PesaPal merchant dashboard. For an
+  offline payment, confirm it from the provider dashboard
+  (`POST /api/provider/payments/{id}/status`), which records the verification.
+* **`is_enrolled: true` but the learner never paid** — inspect `verified_at` and
+  the receipt for that payment. If the row predates the fix and slipped through
+  the backfill (it had a receipt even though the money never arrived), clear the
+  stamp: `UPDATE payments SET verified_at = NULL WHERE reference = 'TRH-…';`
+  The catalogue then falls back to "Enrol now" until the gateway confirms.
+* **The API is fine but the SPA still redirects** — the catalogue response is
+  cached in the SPA (~60 s) and `is_enrolled` is re-read from `/api/training`,
+  so hard-reload after the payment settles.

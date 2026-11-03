@@ -7,6 +7,7 @@ use App\Models\Dispute;
 use App\Models\Invoice;
 use App\Models\Payment;
 use App\Models\Receipt;
+use App\Services\PaymentVerifier;
 use App\Services\PesaPalService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -18,8 +19,10 @@ use Illuminate\Support\Str;
 
 class PaymentController extends Controller
 {
-    public function __construct(protected PesaPalService $pesapal)
-    {
+    public function __construct(
+        protected PesaPalService $pesapal,
+        protected PaymentVerifier $verifier,
+    ) {
     }
 
     // ------------------------------------------------------------------
@@ -191,68 +194,111 @@ class PaymentController extends Controller
         }
     }
 
-    /** Browser return + IPN from PesaPal. */
+    /**
+     * Browser return + IPN from PesaPal.
+     *
+     * The redirect back from PesaPal carries nothing we can trust: it arrives
+     * in a URL the learner controls. So the status is always re-read from the
+     * gateway and applied through PaymentVerifier, which only unlocks a course
+     * when PesaPal itself reports the transaction as completed.
+     */
     public function callback(Request $request)
     {
         $trackingId = $request->input('OrderTrackingId')
             ?? $request->query('OrderTrackingId')
             ?? $request->input('orderTrackingId');
 
+        $reference = $request->input('OrderMerchantReference')
+            ?? $request->query('OrderMerchantReference')
+            ?? $request->input('orderMerchantReference');
+
+        $payment = null;
+
+        if (is_string($trackingId) && $trackingId !== '') {
+            $payment = Payment::where('tracking_id', $trackingId)->first();
+        }
+
+        if (! $payment && is_string($reference) && $reference !== '') {
+            $payment = Payment::where('reference', $reference)->first();
+        }
+
         $status = 'PENDING';
 
-        if ($trackingId) {
+        if ($payment) {
             try {
-                $token = $this->pesapal->getAccessToken();
-
-                if ($token) {
-                    $response = $this->pesapal->getTransactionStatus($trackingId, $token);
-                    $status   = strtoupper($response['payment_status_description'] ?? 'PENDING');
-
-                    // PesaPal returns "Completed"/"Failed"/"Invalid".
-                    $status = match ($status) {
-                        'COMPLETED', 'SUCCESS' => 'COMPLETED',
-                        'FAILED', 'REVERSED'   => 'FAILED',
-                        'INVALID'              => 'INVALID',
-                        default                => 'PENDING',
-                    };
-                }
-
-                $payment = Payment::where('tracking_id', $trackingId)->first();
-
-                if ($payment && $status !== 'PENDING') {
-                    DB::transaction(function () use ($payment, $status, $trackingId) {
-                        $payment->update(['status' => $status]);
-
-                        if ($payment->isPaid()) {
-                            Receipt::firstOrCreate(
-                                ['payment_id' => $payment->id],
-                                [
-                                    'receipt_number'        => 'REC-'.strtoupper(\Illuminate\Support\Str::random(10)),
-                                    'amount'                => $payment->amount,
-                                    'transaction_reference' => $trackingId,
-                                ]
-                            );
-
-                            $payment->invoice()?->update(['status' => 'PAID']);
-                        } elseif (in_array($status, ['FAILED', 'INVALID'], true)) {
-                            Dispute::firstOrCreate(
-                                ['payment_id' => $payment->id, 'reason' => 'Transaction '.$status],
-                                ['status' => 'OPEN']
-                            );
-                        }
-                    });
-                }
+                $status = $this->verifier->settle($payment) ?? strtoupper((string) $payment->fresh()->status);
             } catch (\Throwable $e) {
-                Log::error('PesaPal callback error: '.$e->getMessage());
+                Log::error('PesaPal callback error: '.$e->getMessage(), [
+                    'payment_id' => $payment->id,
+                ]);
+                $status = strtoupper((string) $payment->fresh()->status);
             }
         }
 
-        $query = http_build_query([
-            'status'    => $status,
-            'reference' => $request->input('OrderMerchantReference', ''),
-        ]);
+        $payment?->refresh();
 
-        return redirect()->away(config('app.frontend_url').'/payment-success?'.$query);
+        // PesaPal's IPN is a server-to-server POST (or an IPNCHANGE
+        // notification) and expects a JSON ACK; the learner's browser comes
+        // back with a GET carrying OrderNotificationType=CALLBACKURL and needs
+        // the redirect to the SPA's success screen.
+        $notificationType = strtoupper((string) $request->input('OrderNotificationType', ''));
+
+        if ($request->isMethod('post') || $notificationType === 'IPNCHANGE') {
+            return response()->json([
+                'orderNotificationType'  => $notificationType !== '' ? $notificationType : 'IPNCHANGE',
+                'orderTrackingId'        => $trackingId,
+                'orderMerchantReference' => $reference,
+                'status'                 => 200,
+            ]);
+        }
+
+        return redirect()->away(config('app.frontend_url').'/payment-success?'.http_build_query([
+            'status'      => $status,
+            'reference'   => $reference ?: ($payment->reference ?? ''),
+            'is_enrolled' => $payment?->isVerifiedPaid() ? '1' : '0',
+        ]));
+    }
+
+    /**
+     * Authoritative payment status for the learner who owns it.
+     *
+     * The success screen can poll this after the PesaPal redirect instead of
+     * guessing from the URL: an unpaid order stays PENDING ("not enrolled"),
+     * and the response flips to COMPLETED only when the gateway confirms it.
+     */
+    public function status(Request $request, string $reference)
+    {
+        $payment = Payment::where('reference', $reference)
+            ->where('user_id', $request->user()->id)
+            ->first();
+
+        if (! $payment) {
+            return response()->json(['message' => 'Payment not found.'], 404);
+        }
+
+        // Re-check with PesaPal while the order is still open, so a callback
+        // that never arrived (or arrived before the gateway settled) cannot
+        // leave the learner stuck on "pending".
+        if (! $payment->isVerifiedPaid()) {
+            try {
+                $this->verifier->settle($payment);
+                $payment->refresh();
+            } catch (\Throwable $e) {
+                Log::error('Payment status refresh failed: '.$e->getMessage(), [
+                    'reference' => $payment->reference,
+                ]);
+            }
+        }
+
+        return response()->json([
+            'reference'   => $payment->reference,
+            'course_id'   => $payment->course_id,
+            'cohort_id'   => $payment->cohort_id,
+            'status'      => strtoupper((string) $payment->status),
+            'is_paid'     => $payment->isPaid(),
+            'is_enrolled' => $payment->isVerifiedPaid(),
+            'verified_at' => $payment->verified_at?->toIso8601String(),
+        ]);
     }
 
     public function adminFinancials()

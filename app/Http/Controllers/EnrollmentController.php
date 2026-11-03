@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Mail\PaymentReceiptMail;
 use App\Models\Course;
 use App\Models\Payment;
+use App\Services\PaymentVerifier;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
@@ -15,19 +16,34 @@ use Illuminate\Support\Facades\Mail;
 
 class EnrollmentController extends Controller
 {
-    /** Internal payment webhook: update a payment and email its invoice/receipt. */
+    public function __construct(protected PaymentVerifier $verifier)
+    {
+    }
+
+    /**
+     * Internal payment webhook: settle a payment from PesaPal's answer and
+     * email its invoice/receipt.
+     *
+     * The `status` field in the request body is deliberately *not* trusted:
+     * before this endpoint accepted it and wrote it straight to the payment,
+     * which let anything that could reach the URL (the SPA's success screen,
+     * a retried request, a third party) mark an unpaid order as COMPLETED and
+     * unlock the course. The gateway is now the only source of the status; a
+     * caller can only ask us to re-read it.
+     */
     public function handlePaymentCallback(Request $request)
     {
         $secret = config('services.pesapal.callback_token');
+
         if ($secret && ! hash_equals((string) $secret, (string) $request->header('X-Callback-Token'))) {
             return response()->json(['message' => 'Invalid callback token.'], 403);
         }
 
         $data = $request->validate([
-            'reference'     => ['required', 'string'],
-            'status'        => ['required', 'in:PENDING,COMPLETED,PAID,SUCCESS,FAILED,INVALID,REFUNDED,CANCELLED'],
-            'user_name'     => ['nullable', 'string'],
-            'payment_method'=> ['nullable', 'string'],
+            'reference'      => ['required', 'string'],
+            'status'         => ['nullable', 'in:PENDING,COMPLETED,PAID,SUCCESS,FAILED,INVALID,REFUNDED,CANCELLED'],
+            'user_name'      => ['nullable', 'string'],
+            'payment_method' => ['nullable', 'string'],
         ]);
 
         $payment = Payment::with(['course', 'cohort', 'user'])
@@ -38,17 +54,39 @@ class EnrollmentController extends Controller
             return response()->json(['message' => 'Payment reference not found.'], 404);
         }
 
+        // Ask PesaPal what happened. Without an answer nothing is changed.
+        $gatewayStatus = $this->verifier->settle($payment);
+
+        if ($gatewayStatus === null) {
+            return response()->json([
+                'status'  => 'error',
+                'message' => 'Could not verify this transaction with PesaPal. The stored status was left unchanged.',
+            ], 409);
+        }
+
+        $payment->refresh();
+
+        $claimed = strtoupper((string) ($data['status'] ?? ''));
+
+        // A caller may not upgrade a payment the gateway has not settled.
+        if (in_array($claimed, Payment::PAID_STATUSES, true) && ! $payment->isVerifiedPaid()) {
+            return response()->json([
+                'status'  => 'error',
+                'message' => 'PesaPal has not confirmed this transaction yet.',
+                'data'    => ['reference' => $payment->reference, 'status' => $gatewayStatus],
+            ], 409);
+        }
+
         try {
             $payment->update([
-                'status'         => $data['status'],
                 'user_name'      => $data['user_name'] ?? $payment->user_name,
                 'payment_method' => $data['payment_method'] ?? $payment->payment_method,
-                'expires_at'     => $data['status'] === 'PENDING' && ! $payment->expires_at
+                'expires_at'     => strtoupper((string) $payment->status) === 'PENDING' && ! $payment->expires_at
                     ? Carbon::now()->addDays(7)
                     : $payment->expires_at,
             ]);
 
-            $isPaid    = $payment->isPaid();
+            $isPaid    = $payment->isVerifiedPaid();
             $view      = $isPaid ? 'pdf.receipt' : 'pdf.invoice';
             $mailType  = $isPaid ? 'receipt' : 'invoice';
             $pdf       = Pdf::loadView($view, compact('payment'));
@@ -57,7 +95,7 @@ class EnrollmentController extends Controller
 
             return response()->json([
                 'status'  => 'success',
-                'message' => "Payment updated to {$data['status']} and {$mailType} sent.",
+                'message' => "Payment is {$payment->status} and {$mailType} sent.",
                 'data'    => [
                     'reference' => $payment->reference,
                     'expiry'    => $payment->expires_at,
@@ -92,7 +130,7 @@ class EnrollmentController extends Controller
     {
         $payments = Payment::with(['course', 'cohort'])
             ->where('user_id', Auth::id())
-            ->whereIn('status', ['COMPLETED', 'PAID', 'SUCCESS'])
+            ->verifiedPaid()
             ->latest()
             ->get();
 
@@ -147,7 +185,15 @@ class EnrollmentController extends Controller
                 return response()->json(['message' => 'Unauthorized access'], 403);
             }
 
-            $payment->update(['status' => $data['status']]);
+            $attributes = ['status' => $data['status']];
+
+            // A provider confirming an offline payment is an authorised manual
+            // confirmation, so it counts as verification for course access.
+            if (in_array(strtoupper($data['status']), Payment::PAID_STATUSES, true)) {
+                $attributes['verified_at'] = $payment->verified_at ?? now();
+            }
+
+            $payment->update($attributes);
 
             return response()->json(['status' => 'success', 'payment' => $payment]);
         } catch (\Throwable $e) {
