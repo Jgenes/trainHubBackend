@@ -161,6 +161,9 @@ class PaymentController extends Controller
             }
 
             $ipnId = $this->pesapal->getIpnId($token);
+            if (! $ipnId) {
+                return response()->json(['success' => false, 'message' => 'Payment notifications are temporarily unavailable. Please try again shortly.'], 502);
+            }
 
             $orderData = [
                 'id'              => $payment->reference,
