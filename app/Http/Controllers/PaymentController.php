@@ -6,6 +6,7 @@ use App\Mail\LoginOtpMail;
 use App\Models\Dispute;
 use App\Models\Invoice;
 use App\Models\Payment;
+use App\Support\EnrollmentFlow;
 use App\Models\Receipt;
 use App\Services\PesaPalService;
 use Illuminate\Http\Request;
@@ -86,6 +87,14 @@ class PaymentController extends Controller
         ]);
 
         $user   = Auth::user();
+
+        $decision = EnrollmentFlow::decision($user->id, $data['course_id']);
+        if ($decision['is_enrolled']) {
+            return response()->json(array_merge([
+                'message' => 'You are already enrolled in this course.',
+            ], $decision), 409);
+        }
+
         $course = \App\Models\Course::findOrFail($data['course_id']);
 
         $phone = preg_replace('/\D/', '', $data['phone'] ?? $user->phone ?? '');

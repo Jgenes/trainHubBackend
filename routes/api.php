@@ -36,6 +36,7 @@ use App\Http\Controllers\{
 */
 Route::get('/training', [TrainingController::class, 'index']);
 Route::get('/training/{id}', [TrainingController::class, 'show'])->whereNumber('id');
+Route::get('/training/{id}/enrollment-status', [TrainingController::class, 'enrollmentStatus'])->whereNumber('id');
 Route::get('/public-courses', [CourseController::class, 'publicIndex']);
 Route::get('/public-reviews', [ReviewController::class, 'publicReviews']);
 Route::get('/top-providers', [PublicController::class, 'topProviders']);

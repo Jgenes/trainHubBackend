@@ -4,13 +4,14 @@ namespace App\Http\Controllers;
 
 use App\Models\Enrollment;
 use App\Models\Payment;
+use App\Support\EnrollmentFlow;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 /**
  * Legacy, non-PesaPal checkout used by the older React flow. It creates a
- * pending payment and lets the client confirm it after the user pays offline.
+ * pending payment. Confirmation requires a separately verified payment.
  */
 class CheckoutController extends Controller
 {
@@ -23,6 +24,14 @@ class CheckoutController extends Controller
         ]);
 
         $user = $request->user();
+
+        $decision = EnrollmentFlow::decision($user->id, $data['course_id']);
+        if ($decision['is_enrolled']) {
+            return response()->json(array_merge([
+                'message' => 'You are already enrolled in this course.',
+            ], $decision), 409);
+        }
+
 
         $payment = DB::transaction(function () use ($data, $user) {
             $names = explode(' ', trim($user->name), 2);
@@ -58,10 +67,15 @@ class CheckoutController extends Controller
             ->where('user_id', auth()->id())
             ->firstOrFail();
 
-        DB::transaction(function () use ($payment) {
-            $payment->update(['status' => 'COMPLETED']);
+        // A learner's browser is not proof of payment. Only the gateway or
+        // authorized provider payment-status flow may mark a payment paid.
+        if (! $payment->isPaid()) {
+            return response()->json(['message' => 'Payment has not been verified.'], 409);
+        }
 
-            Enrollment::firstOrCreate(
+        DB::transaction(function () use ($payment) {
+
+            Enrollment::updateOrCreate(
                 [
                     'user_id'   => $payment->user_id,
                     'course_id' => $payment->course_id,

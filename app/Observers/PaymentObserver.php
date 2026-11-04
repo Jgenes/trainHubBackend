@@ -8,13 +8,13 @@ use App\Models\Payment;
 class PaymentObserver
 {
     /** Grant course access as soon as a payment becomes successful. */
-    public function updated(Payment $payment): void
+    public function saved(Payment $payment): void
     {
         if (! $payment->isPaid()) {
             return;
         }
 
-        Enrollment::firstOrCreate(
+        Enrollment::updateOrCreate(
             [
                 'user_id'   => $payment->user_id,
                 'course_id' => $payment->course_id,
