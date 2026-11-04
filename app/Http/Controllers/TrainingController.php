@@ -3,7 +3,7 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
-use App\Models\Payment; 
+use App\Support\EnrollmentFlow;
 use App\Support\CatalogueCourses;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
@@ -25,11 +25,8 @@ class TrainingController extends Controller
 
             // 3. Transform data (Hapa ndipo palikuwa na error)
             $courses->transform(function ($course) use ($userId) {
-                try {
-                    $course->is_enrolled = $this->hasPaidEnrollment($userId, $course->id);
-                } catch (\Exception $e) {
-                    Log::error("Payment Check Error: " . $e->getMessage());
-                    $course->is_enrolled = false;
+                foreach (EnrollmentFlow::decision($userId, $course->id) as $key => $value) {
+                    $course->setAttribute($key, $value);
                 }
 
                 // Hesabu za viti vya cohort
@@ -44,7 +41,7 @@ class TrainingController extends Controller
                 return $course;
             }); // Mabano yalifungwa hapa!
 
-            return response()->json($courses);
+            return response()->json($courses)->header('Cache-Control', 'private, no-store');
 
         } catch (\Exception $e) {
             Log::error("Training Controller Index Error: " . $e->getMessage());
@@ -65,10 +62,9 @@ class TrainingController extends Controller
                 return response()->json(['message' => 'Course not found'], 404);
             }
 
-            $course->is_enrolled = $this->hasPaidEnrollment(
-                Auth::guard('sanctum')->id(),
-                $course->id
-            );
+            foreach (EnrollmentFlow::decision(Auth::guard('sanctum')->id(), $course->id) as $key => $value) {
+                $course->setAttribute($key, $value);
+            }
 
             // Handle JSON contents
             if (is_string($course->contents)) {
@@ -84,18 +80,25 @@ class TrainingController extends Controller
                 });
             }
 
-            return response()->json($course);
+            return response()->json($course)->header('Cache-Control', 'private, no-store');
         } catch (\Exception $e) {
             Log::error("Training Controller Show Error: " . $e->getMessage());
             return response()->json(['error' => $e->getMessage()], 500);
         }
     }
 
-    private function hasPaidEnrollment($userId, $courseId): bool
+    /** Re-check at click time rather than trusting cached catalogue data. */
+    public function enrollmentStatus($id)
     {
-        return $userId !== null && Payment::where('user_id', $userId)
-            ->where('course_id', $courseId)
-            ->whereIn('status', ['COMPLETED', 'PAID', 'SUCCESS'])
-            ->exists();
+        $course = CatalogueCourses::find($id);
+
+        if (! $course) {
+            return response()->json(['message' => 'Course not found'], 404);
+        }
+
+        return response()->json(array_merge(
+            ['course_id' => $course->id],
+            EnrollmentFlow::decision(Auth::guard('sanctum')->id(), $course->id)
+        ))->header('Cache-Control', 'private, no-store');
     }
 }

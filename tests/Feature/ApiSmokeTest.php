@@ -145,6 +145,82 @@ class ApiSmokeTest extends TestCase
             ->assertJsonPath('is_enrolled', false);
     }
 
+    public function test_enroll_click_routes_guests_and_unpaid_learners_to_checkout(): void
+    {
+        $course = $this->course($this->user('tenant'));
+        $this->getJson("/api/training/{$course->id}/enrollment-status")
+            ->assertOk()
+            ->assertJsonPath('is_enrolled', false)
+            ->assertJsonPath('enrollment_action', 'checkout')
+            ->assertJsonPath('enrollment_redirect', '/checkout?course_id='.$course->id);
+
+        $student = $this->user();
+        // Even an enrollment row alone is not proof of successful payment.
+        $enrollment = Enrollment::create(['user_id' => $student->id, 'course_id' => $course->id]);
+        $this->assertSame('PENDING', $enrollment->fresh()->status);
+        foreach (['PENDING', 'FAILED', 'CANCELLED'] as $status) {
+            $payment = $this->paidPayment($student, $course);
+            $payment->update(['status' => $status]);
+            $this->withHeaders($this->auth($student))
+                ->getJson("/api/training/{$course->id}/enrollment-status")
+                ->assertOk()->assertJsonPath('is_enrolled', false)
+                ->assertJsonPath('enrollment_action', 'checkout');
+            $payment->delete();
+        }
+        $this->getJson('/api/training/999999/enrollment-status')->assertNotFound();
+    }
+
+    public function test_paid_enroll_click_routes_to_login_and_blocks_duplicate_checkout(): void
+    {
+        $provider = $this->user('tenant');
+        $student = $this->user();
+        $course = $this->course($provider);
+        $otherCourse = $this->course($provider);
+        $payment = $this->paidPayment($student, $course);
+
+        foreach (['COMPLETED', 'PAID', 'SUCCESS'] as $status) {
+            $payment->update(['status' => $status]);
+            $this->withHeaders($this->auth($student))
+                ->getJson("/api/training/{$course->id}/enrollment-status")
+                ->assertOk()->assertJsonPath('is_enrolled', true)
+                ->assertJsonPath('enrollment_action', 'login')
+                ->assertJsonPath('enrollment_redirect', '/login');
+        }
+        $this->getJson("/api/training/{$otherCourse->id}/enrollment-status")
+            ->assertOk()->assertJsonPath('is_enrolled', false);
+        foreach (['/api/checkout', '/api/payment/initiate'] as $uri) {
+            $this->postJson($uri, ['course_id' => $course->id, 'amount' => 100000])
+                ->assertStatus(409)->assertJsonPath('enrollment_redirect', '/login');
+        }
+        $this->assertSame(1, Payment::count());
+        $this->withHeaders($this->auth($this->user()))
+            ->getJson("/api/training/{$course->id}/enrollment-status")
+            ->assertOk()->assertJsonPath('is_enrolled', false);
+    }
+
+    public function test_checkout_cannot_self_confirm_payment_and_verified_payment_updates_enrollment(): void
+    {
+        $student = $this->user();
+        $course = $this->course($this->user('tenant'));
+        $response = $this->withHeaders($this->auth($student))
+            ->postJson('/api/checkout', ['course_id' => $course->id, 'amount' => 100000])
+            ->assertCreated();
+        $payment = Payment::findOrFail($response->json('enrollment_id'));
+        $this->postJson("/api/checkout/{$payment->id}/confirm")->assertStatus(409);
+        $this->assertSame('PENDING', $payment->fresh()->status);
+        $this->assertDatabaseCount('enrollments', 0);
+
+        Enrollment::create(['user_id' => $student->id, 'course_id' => $course->id, 'status' => 'PENDING']);
+        // Simulate a trusted gateway/provider verification, not a learner request.
+        $payment->update(['status' => 'COMPLETED']);
+        $this->assertDatabaseHas('enrollments', [
+            'user_id' => $student->id, 'course_id' => $course->id, 'status' => 'PAID',
+        ]);
+        $this->postJson("/api/checkout/{$payment->id}/confirm")->assertOk();
+        $this->postJson("/api/checkout/{$payment->id}/confirm")->assertOk();
+        $this->assertDatabaseCount('enrollments', 1);
+    }
+
     public function test_registration_activation_login_and_me(): void
     {
         Mail::fake();

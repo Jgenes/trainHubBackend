@@ -447,3 +447,75 @@ database. It does **not** create sample courses.
 `GET /api/top-providers` also selects the provider `user_id` needed by
 `Provider::courses()` before hiding it from the response, so `courses_count`
 reflects the same public scope instead of always returning zero.
+
+## Enroll button: checkout vs login
+
+The frontend application is not in this repository. The API now exposes a fresh
+click-time decision via `GET /api/training/{courseId}/enrollment-status`. Send the
+current Sanctum bearer token when available. The response is private/no-store:
+
+```json
+{
+  "course_id": 12,
+  "is_enrolled": false,
+  "enrollment_action": "checkout",
+  "enrollment_redirect": "/checkout?course_id=12"
+}
+```
+
+A successful payment belonging to **this user and this course** (`COMPLETED`,
+`PAID`, or `SUCCESS`) instead returns `true`, `login`, and `/login`. Pending,
+failed, cancelled, other-user, or other-course payments do not qualify. Guests
+cannot be identified as previous learners without authentication; they get the
+checkout decision, and checkout must authenticate them before calling protected
+payment APIs. Do not accept a client-supplied user ID/email to check entitlement.
+The training list/detail responses also include these decision fields.
+
+Example frontend handler (adapt the checkout path to the actual frontend router):
+
+```js
+async function onEnroll(courseId) {
+  try {
+    // api must attach the signed-in user's bearer token when available.
+    const { data } = await api.get(`/training/${courseId}/enrollment-status`);
+    navigate(data.enrollment_redirect);
+  } catch (error) {
+    // Show an error/retry; never assume enrolled on a failed request.
+    setError('Unable to check enrollment. Please try again.');
+  }
+}
+```
+
+Do not route Enroll to `/my-learning` just because a token exists, a payment row
+exists, or a cohort's `enrolled` seat count is nonzero. Use the current decision,
+not cached catalogue data. If the frontend automatically redirects authenticated
+visitors away from `/login`, that route guard also needs adjustment for the
+requested flow. This backend does not issue an Enroll redirect to My Learning;
+`GET /api/my-learning` only returns JSON. JSON decision fields do not navigate a
+browser by themselves.
+
+Both `POST /api/checkout` and `POST /api/payment/initiate` return HTTP 409 with the
+same decision fields for an already-paid course, without creating another payment.
+Handle that response by navigating to `enrollment_redirect`. Legacy checkout
+confirmation now returns 409 until a trusted payment callback or authorized
+provider has verified payment; clicking Confirm is not proof of payment.
+Successful payment saves create or update the associated enrollment to `PAID`.
+
+### Enrollment schema findings and deployment
+
+- `2026_01_11_082508_create_enrollments_table.php` originally created enrollment
+  records with user/cohort references and a default status of `PAID`.
+- `2026_10_27_000001_repair_schema.php` adds nullable `course_id`, `provider_id`,
+  `student_id`, and `expires_at`, and repairs legacy non-nullable cohorts. Missing
+  repairs can break enrollment writes; they do not define browser redirects.
+- `2026_11_04_000001_default_enrollments_to_pending.php` changes only the default
+  for future enrollment inserts to `PENDING`. Existing rows are preserved. Do not
+  blindly backfill them as paid: reconcile them against verified payments first.
+- Catalogue decisions and learning access remain payment-based, so a historical
+  `PAID` enrollment without a successful payment does not itself grant access.
+
+Deploy with `php artisan migrate --force` and `php artisan optimize:clear`.
+Inspect `php artisan migrate:status` to confirm the repair and new default
+migration ran. Never use `migrate:fresh` on production. Run regression tests with
+`php artisan test --filter=ApiSmokeTest` in a PHP environment with Composer
+dependencies installed.
