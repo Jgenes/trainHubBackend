@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -44,19 +45,31 @@ class PesaPalService
             return null;
         }
 
+        $callbackUrl = route('pesapal.callback');
+        $cacheKey = 'pesapal.ipn.'.sha1($this->baseUrl.'|'.$callbackUrl);
+        $cachedId = Cache::get($cacheKey);
+        if (is_string($cachedId) && $cachedId !== '') {
+            return $cachedId;
+        }
+
         try {
             $response = Http::withToken($token)->asJson()->timeout(20)
                 ->post($this->baseUrl.'/api/URLSetup/RegisterIPN', [
-                    'url'                   => route('pesapal.callback'),
+                    'url'                   => $callbackUrl,
                     'ipn_notification_type' => 'POST',
                 ]);
 
-            if ($response->failed()) {
-                Log::error('PesaPal IPN registration failed', ['body' => $response->body()]);
+            $ipnId = $response->json('ipn_id');
+            if ($response->failed() || ! is_string($ipnId) || $ipnId === '') {
+                Log::error('PesaPal IPN registration failed', [
+                    'status' => $response->status(),
+                    'body' => $response->body(),
+                ]);
                 return null;
             }
 
-            return $response->json('ipn_id');
+            Cache::put($cacheKey, $ipnId, now()->addDays(30));
+            return $ipnId;
         } catch (\Throwable $e) {
             Log::error('PesaPal IPN exception: '.$e->getMessage());
             return null;
