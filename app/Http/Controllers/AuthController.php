@@ -235,7 +235,7 @@ class AuthController extends Controller
         return match ($user->role) {
             'admin'  => '/admin/dashboard',
             'tenant' => $this->handleTenantRedirect($user),
-            default  => '/',
+            default  => '/dashboard',
         };
     }
 

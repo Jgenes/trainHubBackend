@@ -257,6 +257,37 @@ class ApiSmokeTest extends TestCase
             ->assertJsonPath('email', 'jane@example.test');
     }
 
+    public function test_login_otp_returns_dashboard_redirect_for_each_role(): void
+    {
+        $admin = $this->user('admin', ['login_otp' => '123456', 'login_otp_expires_at' => now()->addMinute()]);
+        $learner = $this->user('user', ['login_otp' => '234567', 'login_otp_expires_at' => now()->addMinute()]);
+        $tenant = $this->user('tenant', ['login_otp' => '345678', 'login_otp_expires_at' => now()->addMinute()]);
+
+        Provider::create([
+            'id' => (string) Str::uuid(),
+            'legal_name' => 'Tenant Training Ltd',
+            'provider_type' => 'Company',
+            'region' => 'Dar es Salaam',
+            'contact_name' => $tenant->name,
+            'contact_phone' => $tenant->phone,
+            'contact_email' => $tenant->email,
+            'status' => 'APPROVED',
+            'provider_slug' => 'tenant-training-'.Str::lower(Str::random(8)),
+            'created_by' => $tenant->id,
+            'user_id' => $tenant->id,
+        ]);
+
+        foreach ([
+            [$admin, '123456', '/admin/dashboard'],
+            [$learner, '234567', '/dashboard'],
+            [$tenant, '345678', '/provider/dashboard'],
+        ] as [$user, $otp, $redirect]) {
+            $this->postJson('/api/verify-otp', ['email' => $user->email, 'otp' => $otp])
+                ->assertOk()
+                ->assertJsonPath('redirect', $redirect);
+        }
+    }
+
     public function test_password_reset_flow(): void
     {
         Mail::fake();
